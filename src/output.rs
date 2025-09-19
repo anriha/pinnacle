@@ -179,6 +179,10 @@ impl Pinnacle {
     ) {
         let _span = tracy_client::span!("Pinnacle::change_output_state");
 
+        if let Some(_mode) = mode {
+            self.set_output_enabled(output, true);
+        }
+
         // Calculate the ratio that the pointer location was over the output's size
         // so we can warp it if the output moves
         let pointer_loc_ratio = self.seat.get_pointer().and_then(|ptr| {
