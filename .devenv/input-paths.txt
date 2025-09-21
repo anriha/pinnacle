@@ -1,0 +1,7 @@
+/home/anriha/projects/pinnacle/.devenv/flake.json
+/home/anriha/projects/pinnacle/.devenv.flake.nix
+/home/anriha/projects/pinnacle/.env
+/home/anriha/projects/pinnacle/devenv.local.nix
+/home/anriha/projects/pinnacle/devenv.lock
+/home/anriha/projects/pinnacle/devenv.nix
+/home/anriha/projects/pinnacle/devenv.yaml

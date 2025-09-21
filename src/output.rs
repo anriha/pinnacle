@@ -346,10 +346,6 @@ impl Pinnacle {
                     powered: Some(output.with_state(|state| state.powered)),
                 },
             );
-
-            for layer in layer_map_for_output(output).layers() {
-                layer.layer_surface().send_close();
-            }
         }
     }
 

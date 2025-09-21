@@ -448,35 +448,62 @@ impl Pinnacle {
     pub fn set_pointer_contents(&mut self, new_contents: PointerContents) {
         let old_contents = std::mem::take(&mut self.pointer_contents);
 
-        let old_focused_win = old_contents
+        let old_win_under_pointer = old_contents
             .focus_under
             .and_then(|(foc, _)| foc.window_for(self));
-        let new_focused_win = new_contents
+        let new_win_under_pointer = new_contents
             .focus_under
             .as_ref()
             .and_then(|(foc, _)| foc.window_for(self));
 
-        if old_focused_win != new_focused_win {
-            if let Some(old) = old_focused_win {
-                self.signal_state.window_pointer_leave.signal(&old);
-            }
-            if let Some(new) = new_focused_win {
-                self.signal_state.window_pointer_enter.signal(&new);
-            }
-        }
-
-        let old_op = old_contents.output_under.and_then(|op| op.upgrade());
-        let new_op = new_contents
+        let old_op_under_pointer = old_contents.output_under.and_then(|op| op.upgrade());
+        let new_op_under_pointer = new_contents
             .output_under
             .as_ref()
             .and_then(|op| op.upgrade());
 
-        if old_op != new_op {
-            if let Some(old) = old_op {
-                self.signal_state.output_pointer_leave.signal(&old);
+        let current_keyboard_focus_win = self.keyboard_focus_stack.current_focus();
+        let current_keyboard_focus_op = current_keyboard_focus_win
+            .as_ref()
+            .and_then(|window| window.output(self));
+
+        let did_window_change = old_win_under_pointer != new_win_under_pointer;
+        let did_output_change = old_op_under_pointer != new_op_under_pointer;
+
+        let should_focus_window =
+            new_win_under_pointer.is_some() && new_win_under_pointer.as_ref() != current_keyboard_focus_win;
+        let should_focus_output =
+            new_op_under_pointer.is_some() && new_op_under_pointer != current_keyboard_focus_op;
+
+        // A 'leave' signal is sent for the old window if the pointer is no longer located on its surface.
+        if did_window_change {
+            if let Some(old_window) = old_win_under_pointer {
+                self.signal_state.window_pointer_leave.signal(&old_window);
             }
-            if let Some(new) = new_op {
-                self.signal_state.output_pointer_enter.signal(&new);
+        }
+
+        // An 'enter' signal is sent if the pointer has either entered a new window,
+        // or is moving over a window that does not currently hold keyboard focus.
+        // This second condition synchronizes keyboard focus with pointer focus.
+        if did_window_change || should_focus_window {
+            if let Some(new_window) = new_win_under_pointer {
+                self.signal_state.window_pointer_enter.signal(&new_window);
+            }
+        }
+
+        // A 'leave' signal is sent for the old output if the pointer has moved to a different monitor.
+        if did_output_change {
+            if let Some(old_output) = old_op_under_pointer {
+                self.signal_state.output_pointer_leave.signal(&old_output);
+            }
+        }
+
+        // An 'enter' signal is sent for the new output, applying the same logic as for windows.
+        // This synchronizes the active output with the pointer's location, even if keyboard
+        // focus was on a window on a different output.
+        if did_output_change || should_focus_output {
+            if let Some(new_output) = new_op_under_pointer {
+                self.signal_state.output_pointer_enter.signal(&new_output);
             }
         }
 
