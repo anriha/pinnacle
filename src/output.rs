@@ -325,10 +325,6 @@ impl Pinnacle {
                     scale: Some(output.current_scale()),
                 },
             );
-
-            for layer in layer_map_for_output(output).layers() {
-                layer.layer_surface().send_close();
-            }
         }
     }
 
