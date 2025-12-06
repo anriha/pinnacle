@@ -190,7 +190,7 @@ impl WindowElement {
     }
 
     pub fn set_pending_geo(&self, size: Size<i32, Logical>, loc: Option<Point<i32, Logical>>) {
-        let (size, loc) = {
+        let (mut size, loc) = {
             // Not `should_not_have_ssd`, we need the calculation done beforehand
             if self.with_state(|state| {
                 state.layout_mode.is_fullscreen()
@@ -208,11 +208,14 @@ impl WindowElement {
                     loc.x += max_bounds.left as i32;
                     loc.y += max_bounds.top as i32;
                 }
-                size.w = i32::max(0, size.w - max_bounds.left as i32 - max_bounds.right as i32);
-                size.h = i32::max(0, size.h - max_bounds.top as i32 - max_bounds.bottom as i32);
+                size.w = i32::max(1, size.w - max_bounds.left as i32 - max_bounds.right as i32);
+                size.h = i32::max(1, size.h - max_bounds.top as i32 - max_bounds.bottom as i32);
                 (size, loc)
             }
         };
+
+        size.w = size.w.max(1);
+        size.h = size.h.max(1);
 
         match self.underlying_surface() {
             WindowSurface::Wayland(toplevel) => {
@@ -221,10 +224,6 @@ impl WindowElement {
                 });
             }
             WindowSurface::X11(surface) => {
-                // Sending a configure with an empty size breaks X11 windows. Let's not do that.
-                if size.is_empty() {
-                    return;
-                }
                 let loc = loc.unwrap_or_else(|| surface.geometry().loc);
                 if let Err(err) = surface.configure(Some(Rectangle::new(loc, size))) {
                     warn!("Failed to configure xwayland window: {err}");
