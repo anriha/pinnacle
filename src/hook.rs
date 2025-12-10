@@ -154,12 +154,15 @@ pub fn add_mapped_toplevel_pre_commit_hook(toplevel: &ToplevelSurface) -> HookId
                         }
                     };
 
+                    let mut toplevel_state = states.cached_state.get::<ToplevelCachedState>();
+
                     let commit_serial = states
                         .cached_state
                         .get::<ToplevelCachedState>()
                         .pending()
                         .last_acked
                         .as_ref()
+                        .or_else(|| toplevel_state.current().last_acked.as_ref())
                         .map(|configure| configure.serial);
 
                     (got_unmapped, dmabuf, commit_serial)
