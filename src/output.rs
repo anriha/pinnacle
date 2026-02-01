@@ -391,6 +391,9 @@ impl Pinnacle {
 
         self.signal_state.output_disconnect.signal(output);
 
+        let powered = output.with_state(|state| state.powered);
+        debug!("Saving output {} with powered={}", output.name(), powered);
+
         self.config.connector_saved_states.insert(
             OutputName(output.name()),
             ConnectorSavedState {

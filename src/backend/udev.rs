@@ -1110,6 +1110,11 @@ impl Udev {
             .connector_saved_states
             .get(&OutputName(output.name()))
         {
+            debug!(
+                "Found saved state for {}: powered={:?}",
+                output.name(),
+                saved_state.powered
+            );
             let ConnectorSavedState {
                 loc,
                 tags,
@@ -1123,6 +1128,7 @@ impl Udev {
                 self.set_output_powered(&output, &pinnacle.loop_handle, powered);
             }
         } else {
+            debug!("No saved state for {}", output.name());
             pinnacle.signal_state.output_connect.signal(&output);
         }
 
