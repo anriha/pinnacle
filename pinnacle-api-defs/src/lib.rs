@@ -76,6 +76,7 @@ pub mod pinnacle {
                 WindowLayoutModeChangedRequest,
                 WindowCreatedRequest,
                 WindowDestroyedRequest,
+                WindowUrgentRequest,
                 TagActiveRequest,
                 TagCreatedRequest,
                 TagRemovedRequest,

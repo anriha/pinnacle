@@ -162,6 +162,7 @@ local signal_name_to_SignalName = {
     layout_mode_changed = "WindowLayoutModeChanged",
     created = "WindowCreated",
     destroyed = "WindowDestroyed",
+    urgent = "WindowUrgent",
 }
 
 ---@class pinnacle.window.WindowSignal Signals related to compositor events.
@@ -172,6 +173,7 @@ local signal_name_to_SignalName = {
 ---@field layout_mode_changed fun(window: pinnacle.window.WindowHandle, layout_mode: pinnacle.window.LayoutMode)? A window's layout mode changed.
 ---@field created fun(window: pinnacle.window.WindowHandle)? A window was created.
 ---@field destroyed fun(window: pinnacle.window.WindowHandle, title: string, app_id: string)? A window was closed.
+---@field urgent fun(window: pinnacle.window.WindowHandle, urgent: boolean)? A window's urgency state changed. `urgent` is `true` when the window demands attention, `false` when it is no longer urgent.
 
 ---Connects to a window signal.
 ---

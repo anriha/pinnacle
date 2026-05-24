@@ -388,6 +388,7 @@ pub struct WindowElementState {
     pub floating_y: Option<i32>,
     pub floating_size: Size<i32, Logical>,
     pub need_configure: bool,
+    pub urgent: bool,
 
     pub pending_transactions: Vec<(Serial, Transaction)>,
 
@@ -662,6 +663,7 @@ impl WindowElementState {
             floating_y: Default::default(),
             floating_size: Default::default(),
             need_configure: false,
+            urgent: false,
             minimized: false,
             snapshot: None,
             mapped_hook_id: None,

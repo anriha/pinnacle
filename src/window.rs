@@ -39,6 +39,7 @@ use window_state::LayoutModeKind;
 
 use crate::{
     api::signal::Signal,
+    handlers::xdg_activation::ActivationContext,
     render::util::snapshot::WindowSnapshot,
     state::{Pinnacle, State, WithState},
     tag::Tag,
@@ -801,11 +802,11 @@ impl State {
 
         let Unmapped {
             window,
-            activation_token_data: _, // TODO:
+            activation_token_data,
             state,
         } = unmapped;
 
-        let (attempt_float_on_map, focus) = if let UnmappedState::PostInitialConfigure {
+        let (attempt_float_on_map, mut focus) = if let UnmappedState::PostInitialConfigure {
             attempt_float_on_map,
             focus,
         } = state
@@ -842,7 +843,22 @@ impl State {
             window.with_state(|state| state.layout_mode.is_tiled()),
         );
 
-        // TODO: xdg activation
+        if let Some(token_data) = activation_token_data
+            && let Some(context) = token_data.user_data.get::<ActivationContext>()
+        {
+            match context {
+                ActivationContext::UrgentOnly => {
+                    window.with_state_mut(|state| state.urgent = true);
+                    self.pinnacle
+                        .signal_state
+                        .window_urgent
+                        .signal((&window, true));
+                }
+                ActivationContext::FocusIfPossible => {
+                    focus = true;
+                }
+            }
+        }
 
         if focus {
             self.pinnacle.keyboard_focus_stack.set_focus(window);

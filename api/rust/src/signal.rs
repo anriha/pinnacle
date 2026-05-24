@@ -349,6 +349,21 @@ signals! {
                 }
             },
         }
+
+        /// A window's urgency state changed.
+        ///
+        /// Callbacks receive the window and the new urgency state (true = urgent, false = not urgent).
+        WindowUrgent = {
+            enum_name = Urgent,
+            callback_type = Box<dyn FnMut(&WindowHandle, bool) + Send + 'static>,
+            client_request = window_urgent,
+            on_response = |response, callbacks| {
+                let handle = WindowHandle { id: response.window_id };
+                for callback in callbacks {
+                    callback(&handle, response.urgent);
+                }
+            },
+        }
     }
     /// Signals relating to tag events.
     TagSignal => {
@@ -429,6 +444,7 @@ pub(crate) struct SignalState {
     pub(crate) window_layout_mode_changed: SignalData<WindowLayoutModeChanged>,
     pub(crate) window_created: SignalData<WindowCreated>,
     pub(crate) window_destroyed: SignalData<WindowDestroyed>,
+    pub(crate) window_urgent: SignalData<WindowUrgent>,
 
     pub(crate) tag_active: SignalData<TagActive>,
     pub(crate) tag_created: SignalData<TagCreated>,
@@ -461,6 +477,7 @@ impl SignalState {
             window_layout_mode_changed: SignalData::new(),
             window_created: SignalData::new(),
             window_destroyed: SignalData::new(),
+            window_urgent: SignalData::new(),
 
             tag_active: SignalData::new(),
             tag_created: SignalData::new(),
@@ -486,6 +503,7 @@ impl SignalState {
         self.window_layout_mode_changed.reset();
         self.window_created.reset();
         self.window_destroyed.reset();
+        self.window_urgent.reset();
 
         self.tag_active.reset();
         self.tag_created.reset();
