@@ -98,6 +98,8 @@ impl TryFrom<layout::v1::LayoutNode> for crate::layout::tree::LayoutNode {
     fn try_from(node: layout::v1::LayoutNode) -> Result<Self, Self::Error> {
         let style = node.style.ok_or(())?;
 
+        let has_fixed_size = style.fixed_width.is_some() || style.fixed_height.is_some();
+
         let taffy_style = taffy::Style {
             flex_direction: match style.flex_dir() {
                 layout::v1::FlexDir::Unspecified | layout::v1::FlexDir::Row => {
@@ -105,8 +107,12 @@ impl TryFrom<layout::v1::LayoutNode> for crate::layout::tree::LayoutNode {
                 }
                 layout::v1::FlexDir::Column => taffy::FlexDirection::Column,
             },
-            flex_basis: taffy::Dimension::percent(style.size_proportion),
-            flex_grow: 1.0,
+            flex_basis: if has_fixed_size {
+                taffy::Dimension::auto()
+            } else {
+                taffy::Dimension::percent(style.size_proportion)
+            },
+            flex_grow: if has_fixed_size { 0.0 } else { 1.0 },
             margin: style
                 .gaps
                 .map(|gaps| taffy::Rect {
