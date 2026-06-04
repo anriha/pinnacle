@@ -59,6 +59,7 @@ prop_compose! {
             traversal_overrides,
             style,
             children: children.clone(),
+            window_id: None,
         }
     }
 }
@@ -88,7 +89,7 @@ proptest! {
         let geos_and_nodes = tree.compute_geos(w, h);
 
         if !geos_and_nodes.is_empty() {
-            let &(_, resize_node) = geos_and_nodes.choose(&mut rand::rng()).unwrap();
+            let &(_, resize_node, _) = geos_and_nodes.choose(&mut rand::rng()).unwrap();
 
             tree.resize_tile(resize_node, new_size, resize_x_dir, resize_y_dir);
 

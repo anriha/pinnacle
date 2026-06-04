@@ -15,6 +15,7 @@ message LayoutNode {
     map<uint32, TraversalOverrides> traversal_overrides = 3;
     NodeStyle style = 4;
     repeated LayoutNode children = 5;
+    optional uint32 window_id = 6;
 }
 
 message TraversalOverrides {
@@ -31,6 +32,12 @@ message NodeStyle {
     FlexDir flex_dir = 1;
     float size_proportion = 2;
     Gaps gaps = 3;
+    optional float fixed_width = 4;
+    optional float fixed_height = 5;
+    optional float min_width = 6;
+    optional float min_height = 7;
+    optional float max_width = 8;
+    optional float max_height = 9;
 }
 
 message LayoutRequest {
@@ -56,6 +63,8 @@ message LayoutResponse {
     string output_name = 2;
     uint32 window_count = 3;
     repeated uint32 tag_ids = 4;
+    repeated uint32 window_ids = 5;
+    repeated string app_ids = 6;
 }
 
 service LayoutService {

@@ -72,6 +72,8 @@ impl layout::v1::layout_service_server::LayoutService for super::LayoutService {
                                 output_name: info.output_name.0,
                                 window_count: info.window_count,
                                 tag_ids: info.tag_ids.into_iter().map(|id| id.to_inner()).collect(),
+                                window_ids: info.window_ids,
+                                app_ids: info.app_ids,
                             }))
                             .await
                             .is_err()
@@ -114,6 +116,36 @@ impl TryFrom<layout::v1::LayoutNode> for crate::layout::tree::LayoutNode {
                     bottom: taffy::LengthPercentageAuto::length(gaps.bottom),
                 })
                 .unwrap_or(taffy::Rect::length(0.0)),
+            size: taffy::Size {
+                width: style
+                    .fixed_width
+                    .map(taffy::Dimension::length)
+                    .unwrap_or(taffy::Dimension::auto()),
+                height: style
+                    .fixed_height
+                    .map(taffy::Dimension::length)
+                    .unwrap_or(taffy::Dimension::auto()),
+            },
+            min_size: taffy::Size {
+                width: style
+                    .min_width
+                    .map(taffy::Dimension::length)
+                    .unwrap_or(taffy::Dimension::auto()),
+                height: style
+                    .min_height
+                    .map(taffy::Dimension::length)
+                    .unwrap_or(taffy::Dimension::auto()),
+            },
+            max_size: taffy::Size {
+                width: style
+                    .max_width
+                    .map(taffy::Dimension::length)
+                    .unwrap_or(taffy::Dimension::auto()),
+                height: style
+                    .max_height
+                    .map(taffy::Dimension::length)
+                    .unwrap_or(taffy::Dimension::auto()),
+            },
             ..Default::default()
         };
 
@@ -131,6 +163,7 @@ impl TryFrom<layout::v1::LayoutNode> for crate::layout::tree::LayoutNode {
                 .into_iter()
                 .map(Self::try_from)
                 .collect::<Result<Vec<_>, _>>()?,
+            window_id: node.window_id,
         })
     }
 }
