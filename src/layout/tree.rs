@@ -441,6 +441,14 @@ impl LayoutTree {
                         .sum::<f32>()
                         - original_flex_basis;
 
+                    // Determine the parent's main axis for fixed-size detection
+                    let parent_flex_dir =
+                        self.taffy_tree.style(parent).unwrap().flex_direction;
+                    let is_row = matches!(
+                        parent_flex_dir,
+                        taffy::FlexDirection::Row | taffy::FlexDirection::RowReverse
+                    );
+
                     self.taffy_tree.remove(to_remove).unwrap();
 
                     let children = self.taffy_tree.children(parent).unwrap();
@@ -453,9 +461,18 @@ impl LayoutTree {
                     let new_basises = rescale_flex_basises(&old_basises, target_sum);
 
                     for (child, basis) in children.into_iter().zip(new_basises) {
-                        let mut style = self.taffy_tree.style(child).unwrap().clone();
-                        style.flex_basis = taffy::Dimension::percent(basis);
-                        self.taffy_tree.set_style(child, style).unwrap();
+                        let style = self.taffy_tree.style(child).unwrap();
+                        // Don't rescale nodes with a fixed size on the main axis
+                        let has_fixed_main_size = if is_row {
+                            style.size.width != taffy::Dimension::auto()
+                        } else {
+                            style.size.height != taffy::Dimension::auto()
+                        };
+                        if !has_fixed_main_size {
+                            let mut style = style.clone();
+                            style.flex_basis = taffy::Dimension::percent(basis);
+                            self.taffy_tree.set_style(child, style).unwrap();
+                        }
                     }
                 }
                 EditAction::Update(path, val) => {
@@ -812,9 +829,16 @@ impl LayoutTree {
                         let new_basises = calculate_flex_basises(&geos, basises_sum);
 
                         for (&node, new_basis) in to_resize_opposing.iter().zip(new_basises) {
-                            let mut style = self.taffy_tree.style(node).unwrap().clone();
-                            style.flex_basis = taffy::Dimension::percent(new_basis);
-                            self.taffy_tree.set_style(node, style).unwrap();
+                            let style = self.taffy_tree.style(node).unwrap();
+                            let has_fixed_main_size = match layout_dir {
+                                LayoutDir::Row => style.size.width != taffy::Dimension::auto(),
+                                LayoutDir::Col => style.size.height != taffy::Dimension::auto(),
+                            };
+                            if !has_fixed_main_size {
+                                let mut style = style.clone();
+                                style.flex_basis = taffy::Dimension::percent(new_basis);
+                                self.taffy_tree.set_style(node, style).unwrap();
+                            }
                         }
                     }
 
@@ -932,9 +956,16 @@ impl LayoutTree {
         let new_basises = calculate_flex_basises(&geos, basises_sum);
 
         for (&node, new_basis) in to_resize.iter().zip(new_basises) {
-            let mut style = self.taffy_tree.style(node).unwrap().clone();
-            style.flex_basis = taffy::Dimension::percent(new_basis);
-            self.taffy_tree.set_style(node, style).unwrap();
+            let style = self.taffy_tree.style(node).unwrap();
+            let has_fixed_main_size = match layout_dir {
+                LayoutDir::Row => style.size.width != taffy::Dimension::auto(),
+                LayoutDir::Col => style.size.height != taffy::Dimension::auto(),
+            };
+            if !has_fixed_main_size {
+                let mut style = style.clone();
+                style.flex_basis = taffy::Dimension::percent(new_basis);
+                self.taffy_tree.set_style(node, style).unwrap();
+            }
         }
     }
 
