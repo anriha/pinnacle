@@ -474,6 +474,7 @@ impl LayoutTree {
                                 min_size,
                                 max_size,
                             },
+                        window_id,
                     } = val;
 
                     let mut style = self.taffy_tree.style(to_update).unwrap().clone();
@@ -504,6 +505,9 @@ impl LayoutTree {
                     }
                     if let Some(traversal_overrides) = traversal_overrides {
                         node_context.traversal_overrides = traversal_overrides;
+                    }
+                    if let Some(window_id) = window_id {
+                        node_context.window_id = window_id;
                     }
                 }
                 EditAction::Move { src, dst, idx } => {
@@ -1009,6 +1013,8 @@ struct LayoutNodeDataDiff {
     traversal_index: Option<u32>,
     traversal_overrides: Option<HashMap<u32, Vec<u32>>>,
     style: <taffy::Style as Diffable>::Output,
+    /// `None` means no change. `Some(None)` means clear. `Some(Some(id))` means set to id.
+    window_id: Option<Option<u32>>,
 }
 
 impl Diffable for LayoutNodeData {
@@ -1023,6 +1029,7 @@ impl Diffable for LayoutNodeData {
             traversal_overrides: (self.traversal_overrides != newer.traversal_overrides)
                 .then_some(newer.traversal_overrides.clone()),
             style: style_diff,
+            window_id: (self.window_id != newer.window_id).then_some(newer.window_id),
         }
     }
 }
