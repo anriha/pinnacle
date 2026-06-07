@@ -486,8 +486,6 @@ impl LayoutTree {
                             StyleDiff {
                                 flex_direction,
                                 flex_basis,
-                                flex_grow,
-                                flex_shrink,
                                 margin,
                                 size,
                                 min_size,
@@ -503,12 +501,6 @@ impl LayoutTree {
                     }
                     if let Some(flex_basis) = flex_basis {
                         style.flex_basis = flex_basis;
-                    }
-                    if let Some(flex_grow) = flex_grow {
-                        style.flex_grow = flex_grow;
-                    }
-                    if let Some(flex_shrink) = flex_shrink {
-                        style.flex_shrink = flex_shrink;
                     }
                     if let Some(margin) = margin {
                         style.margin = margin;

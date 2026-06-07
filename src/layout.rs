@@ -48,23 +48,6 @@ impl Pinnacle {
         let geos_with_nodes: Vec<(Rectangle<i32, Logical>, taffy::NodeId, Option<u32>)> = tree
             .compute_geos(output_width as u32, output_height as u32);
 
-        tracing::debug!(
-            output = output.name(),
-            geo_count = geos_with_nodes.len(),
-            "computed layout geometries"
-        );
-        for (i, (geo, _node, wid)) in geos_with_nodes.iter().enumerate() {
-            tracing::debug!(
-                i,
-                x = geo.loc.x,
-                y = geo.loc.y,
-                w = geo.size.w,
-                h = geo.size.h,
-                window_id = ?wid,
-                "geometry"
-            );
-        }
-
         let (windows_on_foc_tags, to_unmap) = output.with_state(|state| {
             let focused_tags = state.focused_tags().cloned().collect::<IndexSet<_>>();
             self.windows
@@ -123,18 +106,6 @@ impl Pinnacle {
             .map(|win| (win.with_state(|s| s.id.0), win.clone()))
             .collect();
 
-        tracing::debug!(
-            tiled_count = tiled_windows.len(),
-            "tiled windows"
-        );
-        for win in &tiled_windows {
-            let id = win.with_state(|s| s.id.0);
-            let class = win.class().unwrap_or_default();
-            let is_tiled = win.with_state(|s| s.layout_mode.is_tiled());
-            let is_spilled = win.with_state(|s| s.layout_mode.is_spilled());
-            tracing::debug!(id, class, is_tiled, is_spilled, "tiled window");
-        }
-
         // Track which windows have been assigned (by ID) to avoid double-assignment
         let mut assigned_ids: HashSet<u32> = HashSet::new();
         let mut positional_iter = tiled_windows.iter().cloned();
@@ -152,10 +123,6 @@ impl Pinnacle {
                     Some(win.clone())
                 } else {
                     // Requested window not available — leave geometry empty
-                    tracing::warn!(
-                        requested_id = wid,
-                        "window_id set on leaf but window not in tiled list — skipping geometry"
-                    );
                     None
                 }
             } else {
