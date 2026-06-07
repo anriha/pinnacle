@@ -117,29 +117,32 @@ impl Pinnacle {
 
         for (geo, node, maybe_wid) in geos_with_nodes {
             let win = if let Some(wid) = maybe_wid {
-                // Try ID-based matching
+                // Node requested a specific window by ID
                 if let Some(win) = window_map.get(&wid) {
                     assigned_ids.insert(wid);
                     Some(win.clone())
                 } else {
-                    // window_id specified but window not found, fall back to positional
+                    // Requested window not available — leave geometry empty
                     None
                 }
             } else {
-                None
-            };
-
-            // If no window was assigned by ID, try positional
-            let win = win.or_else(|| {
+                // No window_id specified, use positional assignment
+                let mut pos_win = None;
                 loop {
-                    let next = positional_iter.next()?;
-                    let w_id = next.with_state(|s| s.id.0);
-                    if !assigned_ids.contains(&w_id) {
-                        assigned_ids.insert(w_id);
-                        return Some(next);
+                    match positional_iter.next() {
+                        Some(next) => {
+                            let w_id = next.with_state(|s| s.id.0);
+                            if !assigned_ids.contains(&w_id) {
+                                assigned_ids.insert(w_id);
+                                pos_win = Some(next);
+                                break;
+                            }
+                        }
+                        None => break,
                     }
                 }
-            });
+                pos_win
+            };
 
             let Some(win) = win else {
                 // No more unassigned windows — skip this geometry (empty space)
