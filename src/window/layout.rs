@@ -8,7 +8,7 @@ use smithay::{
 
 use crate::{
     backend::Backend,
-    state::{Pinnacle, WithState},
+    state::{Pinnacle, State, WithState},
     util::transaction::{Location, TransactionBuilder},
     window::window_state::LayoutMode,
 };
@@ -244,42 +244,35 @@ impl Pinnacle {
         loc += output_loc + Point::new(offset, offset);
         loc
     }
+}
 
+impl State {
     /// Move a window to a new output.
     ///
-    /// The move itself is done by updating the window tags.
+    /// The move itself is done by updating the window tags through
+    /// [`State::set_window_tags`], which handles any needed layout updates.
     ///
     /// This function additionally fixup the window floating location to prevent the window from
     /// 'jumping back' if it becomes tiled or spilled.
     ///
-    /// The function will request a new layout if the window was in a tiled state.
-    ///
     /// [`Pinnacle::update_window_geometry`] or [`Pinnacle::update_window_layout_mode`] should be
     /// called for the move to be effective.
     pub fn move_window_to_output(&mut self, window: &WindowElement, target: Output) {
-        let _span = tracy_client::span!("Pinnacle::move_window_to_output");
+        let _span = tracy_client::span!("State::move_window_to_output");
 
-        let current_output = window.output(self);
+        let current_output = window.output(&self.pinnacle);
         if current_output.as_ref() == Some(&target) {
             return;
         }
 
-        if self.space.output_geometry(&target).is_none() {
+        if self.pinnacle.space.output_geometry(&target).is_none() {
             tracing::error!("Cannot move a window to an unmapped output.");
             return;
         };
 
-        window.set_tags_to_output(&target);
+        self.set_window_tags(window, crate::window::tags_for_output(&target));
 
-        let loc = self.floating_loc_for_output(&target);
+        let loc = self.pinnacle.floating_loc_for_output(&target);
         window.with_state_mut(|state| state.set_floating_loc(Some(loc)));
-
-        let layout_mode = window.with_state(|state| state.layout_mode);
-
-        if let Some(output) = current_output
-            && layout_mode.is_tiled()
-        {
-            self.request_layout(&output);
-        }
     }
 }

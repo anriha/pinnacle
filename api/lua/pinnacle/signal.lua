@@ -133,6 +133,14 @@ local signals = {
         ---@type fun(response: table)
         on_response = nil,
     },
+    WindowTagsChanged = {
+        ---@type grpc_client.h2.Stream?
+        sender = nil,
+        ---@type { callback_id: integer, callback: fun(window: pinnacle.window.WindowHandle, tags: pinnacle.tag.TagHandle[]) }[]
+        callbacks = {},
+        ---@type fun(response: table)
+        on_response = nil,
+    },
     TagActive = {
         ---@type grpc_client.h2.Stream?
         sender = nil,
@@ -369,6 +377,23 @@ signals.WindowUrgent.on_response = function(response)
 
     for _, callback in ipairs(callbacks) do
         protected_callback("WindowUrgent", callback.callback, window_handle, response.urgent)
+    end
+end
+
+signals.WindowTagsChanged.on_response = function(response)
+    ---@diagnostic disable-next-line: invisible
+    local window_handle = require("pinnacle.window").handle.new(response.window_id)
+    local tag = require("pinnacle.tag")
+    local callbacks = require("pinnacle.util").deep_copy(signals.WindowTagsChanged.callbacks)
+
+    local tag_handles = {}
+    for _, tag_id in ipairs(response.tag_ids or {}) do
+        ---@diagnostic disable-next-line: invisible
+        table.insert(tag_handles, tag.handle.new(tag_id))
+    end
+
+    for _, callback in ipairs(callbacks) do
+        protected_callback("WindowTagsChanged", callback.callback, window_handle, tag_handles)
     end
 end
 

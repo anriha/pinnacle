@@ -364,6 +364,26 @@ signals! {
                 }
             },
         }
+        /// A window's tags changed.
+        ///
+        /// Callbacks receive the window and its new tags.
+        WindowTagsChanged = {
+            enum_name = TagsChanged,
+            callback_type = Box<dyn FnMut(&WindowHandle, &[TagHandle]) + Send + 'static>,
+            client_request = window_tags_changed,
+            on_response = |response, callbacks| {
+                let handle = WindowHandle { id: response.window_id };
+                let tags: Vec<TagHandle> = response
+                    .tag_ids
+                    .into_iter()
+                    .map(|id| TagHandle { id })
+                    .collect();
+
+                for callback in callbacks {
+                    callback(&handle, &tags);
+                }
+            },
+        }
     }
     /// Signals relating to tag events.
     TagSignal => {
@@ -445,6 +465,7 @@ pub(crate) struct SignalState {
     pub(crate) window_created: SignalData<WindowCreated>,
     pub(crate) window_destroyed: SignalData<WindowDestroyed>,
     pub(crate) window_urgent: SignalData<WindowUrgent>,
+    pub(crate) window_tags_changed: SignalData<WindowTagsChanged>,
 
     pub(crate) tag_active: SignalData<TagActive>,
     pub(crate) tag_created: SignalData<TagCreated>,
@@ -478,6 +499,7 @@ impl SignalState {
             window_created: SignalData::new(),
             window_destroyed: SignalData::new(),
             window_urgent: SignalData::new(),
+            window_tags_changed: SignalData::new(),
 
             tag_active: SignalData::new(),
             tag_created: SignalData::new(),
@@ -504,6 +526,7 @@ impl SignalState {
         self.window_created.reset();
         self.window_destroyed.reset();
         self.window_urgent.reset();
+        self.window_tags_changed.reset();
 
         self.tag_active.reset();
         self.tag_created.reset();

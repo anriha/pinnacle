@@ -690,7 +690,7 @@ impl v1::window_service_server::WindowService for super::WindowService {
             }
 
             if let Some(window) = window_id.window(&state.pinnacle) {
-                window.with_state_mut(|state| state.tags = tags);
+                state.set_window_tags(&window, tags);
             } else if let Some(unmapped) = window_id.unmapped_window_mut(&mut state.pinnacle)
                 && let UnmappedState::WaitingForRules { rules, .. } = &mut unmapped.state
             {
@@ -742,7 +742,7 @@ impl v1::window_service_server::WindowService for super::WindowService {
         run_unary(&self.sender, move |state| {
             if let Some(output) = output_name.output(&state.pinnacle) {
                 if let Some(window) = window_id.window(&state.pinnacle) {
-                    state.pinnacle.move_window_to_output(&window, output);
+                    state.move_window_to_output(&window, output);
 
                     let layout_mode = window.with_state(|state| state.layout_mode);
                     state.pinnacle.update_window_geometry(

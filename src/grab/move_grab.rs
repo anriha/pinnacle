@@ -77,17 +77,14 @@ impl PointerGrab<State> for MoveSurfaceGrab {
                 if let Some(output_under_pointer) = output_under_pointer
                     && Some(&output_under_pointer) != tag_output.as_ref()
                 {
-                    self.window.set_tags_to_output(&output_under_pointer);
+                    state.set_window_tags(
+                        &self.window,
+                        crate::window::tags_for_output(&output_under_pointer),
+                    );
 
                     if self.window.with_state(|state| state.layout_mode.is_tiled()) {
                         self.window
                             .with_state_mut(|state| state.set_floating_loc(None));
-                    }
-
-                    state.pinnacle.request_layout(&output_under_pointer);
-
-                    if let Some(tag_output) = tag_output {
-                        state.pinnacle.request_layout(&tag_output);
                     }
                 }
 
@@ -154,9 +151,7 @@ impl PointerGrab<State> for MoveSurfaceGrab {
                 if let Some(output_under_pointer) = output_under_pointer
                     && Some(&output_under_pointer) != tag_output.as_ref()
                 {
-                    state
-                        .pinnacle
-                        .move_window_to_output(&self.window, output_under_pointer.clone());
+                    state.move_window_to_output(&self.window, output_under_pointer.clone());
 
                     state.pinnacle.update_window_geometry(&self.window, false);
                 }

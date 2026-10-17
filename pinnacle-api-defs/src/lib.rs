@@ -77,6 +77,7 @@ pub mod pinnacle {
                 WindowCreatedRequest,
                 WindowDestroyedRequest,
                 WindowUrgentRequest,
+                WindowTagsChangedRequest,
                 TagActiveRequest,
                 TagCreatedRequest,
                 TagRemovedRequest,

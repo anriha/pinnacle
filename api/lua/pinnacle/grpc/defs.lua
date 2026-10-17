@@ -860,6 +860,7 @@ local pinnacle_v1_Backend = {
 ---@field traversal_overrides pinnacle.layout.v1.LayoutNode.TraversalOverridesEntry[]?
 ---@field style pinnacle.layout.v1.NodeStyle?
 ---@field children pinnacle.layout.v1.LayoutNode[]?
+---@field window_id integer?
 
 ---@class pinnacle.layout.v1.LayoutNode.TraversalOverridesEntry
 ---@field key integer?
@@ -872,6 +873,12 @@ local pinnacle_v1_Backend = {
 ---@field flex_dir pinnacle.layout.v1.FlexDir?
 ---@field size_proportion number?
 ---@field gaps pinnacle.layout.v1.Gaps?
+---@field fixed_width number?
+---@field fixed_height number?
+---@field min_width number?
+---@field min_height number?
+---@field max_width number?
+---@field max_height number?
 
 ---@class pinnacle.layout.v1.LayoutRequest
 ---@field tree_response pinnacle.layout.v1.LayoutRequest.TreeResponse?
@@ -891,6 +898,8 @@ local pinnacle_v1_Backend = {
 ---@field output_name string?
 ---@field window_count integer?
 ---@field tag_ids integer[]?
+---@field window_ids integer[]?
+---@field app_ids string[]?
 
 ---@class pinnacle.output.v1.SetLocRequest
 ---@field output_name string?
@@ -1329,6 +1338,20 @@ local pinnacle_v1_Backend = {
 ---@field title string?
 ---@field app_id string?
 
+---@class pinnacle.signal.v1.WindowUrgentRequest
+---@field control pinnacle.signal.v1.StreamControl?
+
+---@class pinnacle.signal.v1.WindowUrgentResponse
+---@field window_id integer?
+---@field urgent boolean?
+
+---@class pinnacle.signal.v1.WindowTagsChangedRequest
+---@field control pinnacle.signal.v1.StreamControl?
+
+---@class pinnacle.signal.v1.WindowTagsChangedResponse
+---@field window_id integer?
+---@field tag_ids integer[]?
+
 ---@class pinnacle.signal.v1.TagActiveRequest
 ---@field control pinnacle.signal.v1.StreamControl?
 
@@ -1630,6 +1653,10 @@ pinnacle.signal.v1.WindowCreatedRequest = {}
 pinnacle.signal.v1.WindowCreatedResponse = {}
 pinnacle.signal.v1.WindowDestroyedRequest = {}
 pinnacle.signal.v1.WindowDestroyedResponse = {}
+pinnacle.signal.v1.WindowUrgentRequest = {}
+pinnacle.signal.v1.WindowUrgentResponse = {}
+pinnacle.signal.v1.WindowTagsChangedRequest = {}
+pinnacle.signal.v1.WindowTagsChangedResponse = {}
 pinnacle.signal.v1.TagActiveRequest = {}
 pinnacle.signal.v1.TagActiveResponse = {}
 pinnacle.signal.v1.TagCreatedRequest = {}
@@ -3399,6 +3426,50 @@ pinnacle.signal.v1.SignalService.WindowDestroyed.response = ".pinnacle.signal.v1
 ---@return string | nil An error string, if any
 function Client:pinnacle_signal_v1_SignalService_WindowDestroyed(callback, done)
     return self:bidirectional_streaming_request(pinnacle.signal.v1.SignalService.WindowDestroyed, callback, done)
+end
+pinnacle.signal.v1.SignalService.WindowUrgent = {}
+pinnacle.signal.v1.SignalService.WindowUrgent.service = "pinnacle.signal.v1.SignalService"
+pinnacle.signal.v1.SignalService.WindowUrgent.method = "WindowUrgent"
+pinnacle.signal.v1.SignalService.WindowUrgent.request = ".pinnacle.signal.v1.WindowUrgentRequest"
+pinnacle.signal.v1.SignalService.WindowUrgent.response = ".pinnacle.signal.v1.WindowUrgentResponse"
+
+---Performs a bidirectional-streaming request.
+---
+---`callback` will be called with every streamed response.
+---
+---The raw client-to-server stream is returned to allow you to send encoded messages.
+---
+---@nodiscard
+---
+---@param callback fun(response: pinnacle.signal.v1.WindowUrgentResponse, stream: grpc_client.h2.Stream)
+---@param done? fun()
+---
+---@return grpc_client.h2.Stream | nil
+---@return string | nil An error string, if any
+function Client:pinnacle_signal_v1_SignalService_WindowUrgent(callback, done)
+    return self:bidirectional_streaming_request(pinnacle.signal.v1.SignalService.WindowUrgent, callback, done)
+end
+pinnacle.signal.v1.SignalService.WindowTagsChanged = {}
+pinnacle.signal.v1.SignalService.WindowTagsChanged.service = "pinnacle.signal.v1.SignalService"
+pinnacle.signal.v1.SignalService.WindowTagsChanged.method = "WindowTagsChanged"
+pinnacle.signal.v1.SignalService.WindowTagsChanged.request = ".pinnacle.signal.v1.WindowTagsChangedRequest"
+pinnacle.signal.v1.SignalService.WindowTagsChanged.response = ".pinnacle.signal.v1.WindowTagsChangedResponse"
+
+---Performs a bidirectional-streaming request.
+---
+---`callback` will be called with every streamed response.
+---
+---The raw client-to-server stream is returned to allow you to send encoded messages.
+---
+---@nodiscard
+---
+---@param callback fun(response: pinnacle.signal.v1.WindowTagsChangedResponse, stream: grpc_client.h2.Stream)
+---@param done? fun()
+---
+---@return grpc_client.h2.Stream | nil
+---@return string | nil An error string, if any
+function Client:pinnacle_signal_v1_SignalService_WindowTagsChanged(callback, done)
+    return self:bidirectional_streaming_request(pinnacle.signal.v1.SignalService.WindowTagsChanged, callback, done)
 end
 pinnacle.signal.v1.SignalService.TagActive = {}
 pinnacle.signal.v1.SignalService.TagActive.service = "pinnacle.signal.v1.SignalService"

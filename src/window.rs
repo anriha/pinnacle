@@ -160,10 +160,13 @@ impl WindowElement {
         matches!(self.x11_surface(), Some(surface) if surface.is_override_redirect())
     }
 
+    /// Sets this window's tags to the given output's focused tags, or its
+    /// first tag if none are focused.
+    ///
+    /// This is only for assigning default tags to unmapped windows; mapped
+    /// windows must go through [`State::set_window_tags`].
     pub fn set_tags_to_output(&self, output: &Output) {
-        self.with_state_mut(|state| {
-            set_tags_to_output(&mut state.tags, output);
-        });
+        self.with_state_mut(|state| state.tags = tags_for_output(output));
     }
 
     /// Takes and returns the most recent transaction that has been committed.
@@ -659,41 +662,6 @@ impl Pinnacle {
         }
     }
 
-    /// Updates the tags of windows that have moved to another output.
-    ///
-    /// A window "moves" to another output when it has more of its area over the new output
-    /// than the old output.
-    ///
-    /// Needs to be called after `Space::refresh`.
-    pub fn update_window_tags(&self) {
-        let _span = tracy_client::span!("Pinnacle::refresh_window_tags");
-
-        for win in self.windows.iter() {
-            if win.with_state(|state| !state.layout_mode.is_floating()) {
-                continue;
-            }
-
-            let Some(tag_output) = win.output(self) else {
-                continue;
-            };
-
-            let Some(overlapping_output) = win
-                .user_data()
-                .get_or_insert(RefCell::<OutputOverlapState>::default)
-                .borrow()
-                .current_output
-                .as_ref()
-                .and_then(|op| op.upgrade())
-            else {
-                continue;
-            };
-
-            if tag_output != overlapping_output {
-                win.set_tags_to_output(&overlapping_output);
-            }
-        }
-    }
-
     pub fn compute_window_geometry(
         &self,
         window: &WindowElement,
@@ -779,8 +747,8 @@ impl Pinnacle {
     }
 }
 
-fn set_tags_to_output(tags: &mut IndexSet<Tag>, output: &Output) {
-    *tags = output.with_state(|state| {
+pub(crate) fn tags_for_output(output: &Output) -> IndexSet<Tag> {
+    output.with_state(|state| {
         let output_tags = state.focused_tags().cloned().collect::<IndexSet<_>>();
         if !output_tags.is_empty() {
             output_tags
@@ -789,10 +757,106 @@ fn set_tags_to_output(tags: &mut IndexSet<Tag>, output: &Output) {
         } else {
             IndexSet::new()
         }
-    });
+    })
 }
 
 impl State {
+    /// Sets a mapped window's tag set, performing all side effects of the change.
+    ///
+    /// This is the only place a mapped window's tags may be written. Routing
+    /// every tag mutation through here keeps layout, rendering, and the
+    /// `WindowTagsChanged` signal in sync with the new state. The signal
+    /// fires whenever the new set differs from the old one, visible or not.
+    ///
+    /// On a visible change this requests a new layout and a render for every
+    /// output of an active tag whose membership changed (tags present in both
+    /// sets, inactive tags, and tags with no output contribute none), and
+    /// updates the Xwayland stacking order. X11 override-redirect windows
+    /// never request layouts as they don't participate in one; they still
+    /// trigger renders and restacking. When the new set equals the old one
+    /// this is a no-op.
+    ///
+    /// Returns `true` when the change is visible — some tag whose membership
+    /// changed is active on some output — and `false` otherwise, including
+    /// when the set didn't change or only inactive tags changed.
+    ///
+    /// Callers: only call this for mapped windows (windows in
+    /// [`Pinnacle::windows`]). Tags of unmapped windows are managed by the
+    /// window rules machinery (`UnmappedState`) and must not go through here.
+    /// Whether a window may end up tagless is caller policy; this performs no
+    /// validation.
+    pub fn set_window_tags(&mut self, window: &WindowElement, new_tags: IndexSet<Tag>) -> bool {
+        let old_tags = window.with_state(|state| state.tags.clone());
+
+        let tags_changed = old_tags != new_tags;
+
+        let affected_outputs: IndexSet<_> = old_tags
+            .symmetric_difference(&new_tags)
+            .filter(|tag| tag.active())
+            .filter_map(|tag| tag.output(&self.pinnacle))
+            .collect();
+
+        if tags_changed {
+            self.pinnacle
+                .signal_state
+                .window_tags_changed
+                .signal((window, &new_tags));
+        }
+
+        window.with_state_mut(move |state| {
+            state.tags = new_tags;
+        });
+
+        for output in affected_outputs.iter() {
+            if !window.is_x11_override_redirect() {
+                self.pinnacle.request_layout(output);
+            }
+            self.schedule_render(output);
+        }
+
+        if !affected_outputs.is_empty() {
+            self.pinnacle.update_xwayland_stacking_order();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Updates the tags of windows that have moved to another output.
+    ///
+    /// A window "moves" to another output when it has more of its area over the new output
+    /// than the old output.
+    ///
+    /// Needs to be called after `Space::refresh`.
+    pub fn update_window_tags(&mut self) {
+        let _span = tracy_client::span!("State::update_window_tags");
+
+        for win in self.pinnacle.windows.clone() {
+            if win.with_state(|state| !state.layout_mode.is_floating()) {
+                continue;
+            }
+
+            let Some(tag_output) = win.output(&self.pinnacle) else {
+                continue;
+            };
+
+            let Some(overlapping_output) = win
+                .user_data()
+                .get_or_insert(RefCell::<OutputOverlapState>::default)
+                .borrow()
+                .current_output
+                .as_ref()
+                .and_then(|op| op.upgrade())
+            else {
+                continue;
+            };
+
+            if tag_output != overlapping_output {
+                self.set_window_tags(&win, tags_for_output(&overlapping_output));
+            }
+        }
+    }
+
     /// Maps an unmapped window, inserting it into the main window vec.
     ///
     /// If it's floating, this will map the window onto the space.

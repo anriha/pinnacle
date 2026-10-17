@@ -163,6 +163,7 @@ local signal_name_to_SignalName = {
     created = "WindowCreated",
     destroyed = "WindowDestroyed",
     urgent = "WindowUrgent",
+    tags_changed = "WindowTagsChanged",
 }
 
 ---@class pinnacle.window.WindowSignal Signals related to compositor events.
@@ -174,6 +175,7 @@ local signal_name_to_SignalName = {
 ---@field created fun(window: pinnacle.window.WindowHandle)? A window was created.
 ---@field destroyed fun(window: pinnacle.window.WindowHandle, title: string, app_id: string)? A window was closed.
 ---@field urgent fun(window: pinnacle.window.WindowHandle, urgent: boolean)? A window's urgency state changed. `urgent` is `true` when the window demands attention, `false` when it is no longer urgent.
+---@field tags_changed fun(window: pinnacle.window.WindowHandle, tags: pinnacle.tag.TagHandle[])? A window's tags changed. `tags` is the window's new set of tags.
 
 ---Connects to a window signal.
 ---

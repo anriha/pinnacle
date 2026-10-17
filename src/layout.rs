@@ -45,8 +45,8 @@ impl Pinnacle {
             (zone.size.w, zone.size.h)
         };
 
-        let geos_with_nodes: Vec<(Rectangle<i32, Logical>, taffy::NodeId, Option<u32>)> = tree
-            .compute_geos(output_width as u32, output_height as u32);
+        let geos_with_nodes: Vec<(Rectangle<i32, Logical>, taffy::NodeId, Option<u32>)> =
+            tree.compute_geos(output_width as u32, output_height as u32);
 
         let (windows_on_foc_tags, to_unmap) = output.with_state(|state| {
             let focused_tags = state.focused_tags().cloned().collect::<IndexSet<_>>();
@@ -112,7 +112,8 @@ impl Pinnacle {
 
         // Assign geometries, matching by window_id where specified,
         // falling back to positional assignment.
-        let mut wins_and_geos_tiled: Vec<(WindowElement, Rectangle<i32, Logical>, bool)> = Vec::new();
+        let mut wins_and_geos_tiled: Vec<(WindowElement, Rectangle<i32, Logical>, bool)> =
+            Vec::new();
         let mut all_nodes: Vec<taffy::NodeId> = Vec::new();
 
         for (geo, node, maybe_wid) in geos_with_nodes {

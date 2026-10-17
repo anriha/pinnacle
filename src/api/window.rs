@@ -169,61 +169,34 @@ pub fn set_decoration_mode(
 }
 
 pub fn move_to_tag(state: &mut State, window: &WindowElement, tag: &Tag) {
-    let source_output = window.output(&state.pinnacle);
-
-    window.with_state_mut(|state| {
-        state.tags = std::iter::once(tag.clone()).collect();
-    });
-
-    if let Some(output) = source_output.as_ref() {
-        state.pinnacle.request_layout(output);
-        state.schedule_render(output);
-    }
-
-    let Some(target_output) = tag.output(&state.pinnacle) else {
-        state.pinnacle.update_xwayland_stacking_order();
-        return;
-    };
-
-    if source_output.as_ref() != Some(&target_output) && tag.active() {
-        state.pinnacle.request_layout(&target_output);
-        state.schedule_render(&target_output);
-    }
-
-    state.pinnacle.update_xwayland_stacking_order();
+    state.set_window_tags(window, std::iter::once(tag.clone()).collect());
 }
 
 pub fn set_tag(state: &mut State, window: &WindowElement, tag: &Tag, set: impl Into<Option<bool>>) {
     let set = set.into();
 
+    let mut new_tags = window.with_state(|state| state.tags.clone());
+
     match set {
         Some(true) => {
-            window.with_state_mut(|state| state.tags.insert(tag.clone()));
+            new_tags.insert(tag.clone());
         }
         Some(false) => {
-            window.with_state_mut(|state| state.tags.shift_remove(tag));
+            new_tags.shift_remove(tag);
         }
         None => {
-            window.with_state_mut(|state| {
-                if state.tags.contains(tag) {
-                    // Prevent toggling that would leave a window tagless
-                    if state.tags.len() > 1 {
-                        state.tags.shift_remove(tag);
-                    }
-                } else {
-                    state.tags.insert(tag.clone());
+            if new_tags.contains(tag) {
+                // Prevent toggling that would leave a window tagless
+                if new_tags.len() > 1 {
+                    new_tags.shift_remove(tag);
                 }
-            });
+            } else {
+                new_tags.insert(tag.clone());
+            }
         }
     }
 
-    let Some(output) = tag.output(&state.pinnacle) else {
-        return;
-    };
-
-    state.pinnacle.request_layout(&output);
-    state.schedule_render(&output);
-    state.pinnacle.update_xwayland_stacking_order();
+    state.set_window_tags(window, new_tags);
 }
 
 pub fn raise(state: &mut State, window: WindowElement) {
@@ -405,8 +378,8 @@ pub fn swap(state: &mut State, window: WindowElement, target: WindowElement) {
     let window_tags = window.with_state(|state| state.tags.clone());
     let target_tags = target.with_state(|state| state.tags.clone());
 
-    window.with_state_mut(|state| state.tags = target_tags);
-    target.with_state_mut(|state| state.tags = window_tags);
+    state.set_window_tags(&window, target_tags);
+    state.set_window_tags(&target, window_tags);
 
     // Swap floating attribute. In case of cross-output swap, this prevent window jumping back.
     let window_floating_x = window.with_state(|state| state.floating_x);

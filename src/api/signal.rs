@@ -3,6 +3,8 @@ use std::{
     sync::atomic::{AtomicU32, Ordering},
 };
 
+use indexmap::IndexSet;
+
 use pinnacle_api_defs::pinnacle::{
     signal::{
         self,
@@ -17,8 +19,9 @@ use pinnacle_api_defs::pinnacle::{
             WindowCreatedResponse, WindowDestroyedRequest, WindowDestroyedResponse,
             WindowFocusedRequest, WindowFocusedResponse, WindowLayoutModeChangedRequest,
             WindowLayoutModeChangedResponse, WindowPointerEnterRequest, WindowPointerEnterResponse,
-            WindowPointerLeaveRequest, WindowPointerLeaveResponse, WindowTitleChangedRequest,
-            WindowTitleChangedResponse, WindowUrgentRequest, WindowUrgentResponse,
+            WindowPointerLeaveRequest, WindowPointerLeaveResponse, WindowTagsChangedRequest,
+            WindowTagsChangedResponse, WindowTitleChangedRequest, WindowTitleChangedResponse,
+            WindowUrgentRequest, WindowUrgentResponse,
         },
     },
     window,
@@ -57,6 +60,7 @@ pub struct SignalState {
     pub window_created: WindowCreated,
     pub window_destroyed: WindowDestroyed,
     pub window_urgent: WindowUrgent,
+    pub window_tags_changed: WindowTagsChanged,
 
     // Tag
     pub tag_active: TagActive,
@@ -85,6 +89,7 @@ impl SignalState {
         self.window_created.clear();
         self.window_destroyed.clear();
         self.window_urgent.clear();
+        self.window_tags_changed.clear();
 
         self.tag_active.clear();
         self.tag_created.clear();
@@ -449,6 +454,30 @@ impl Signal for WindowUrgent {
 }
 
 #[derive(Debug, Default)]
+pub struct WindowTagsChanged {
+    v1: SignalData<signal::v1::WindowTagsChangedResponse>,
+}
+
+impl Signal for WindowTagsChanged {
+    type Args<'a> = (&'a WindowElement, &'a IndexSet<Tag>);
+
+    /// Args: (window, new tags)
+    fn signal(&mut self, args: Self::Args<'_>) {
+        let (window, tags) = args;
+        self.v1.signal(|buf| {
+            buf.push_back(signal::v1::WindowTagsChangedResponse {
+                window_id: window.with_state(|state| state.id.0),
+                tag_ids: tags.iter().map(|tag| tag.id().to_inner()).collect(),
+            });
+        });
+    }
+
+    fn clear(&mut self) {
+        self.v1.instances.clear();
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct TagActive {
     v1: SignalData<signal::v1::TagActiveResponse>,
 }
@@ -655,6 +684,7 @@ impl signal::v1::signal_service_server::SignalService for SignalService {
     type WindowCreatedStream = ResponseStream<WindowCreatedResponse>;
     type WindowDestroyedStream = ResponseStream<WindowDestroyedResponse>;
     type WindowUrgentStream = ResponseStream<WindowUrgentResponse>;
+    type WindowTagsChangedStream = ResponseStream<WindowTagsChangedResponse>;
 
     type TagActiveStream = ResponseStream<TagActiveResponse>;
     type TagCreatedStream = ResponseStream<TagCreatedResponse>;
@@ -824,6 +854,17 @@ impl signal::v1::signal_service_server::SignalService for SignalService {
 
         start_signal_stream(self.sender.clone(), in_stream, |state| {
             &mut state.pinnacle.signal_state.window_urgent.v1
+        })
+    }
+
+    async fn window_tags_changed(
+        &self,
+        request: Request<Streaming<WindowTagsChangedRequest>>,
+    ) -> Result<Response<Self::WindowTagsChangedStream>, Status> {
+        let in_stream = request.into_inner();
+
+        start_signal_stream(self.sender.clone(), in_stream, |state| {
+            &mut state.pinnacle.signal_state.window_tags_changed.v1
         })
     }
 

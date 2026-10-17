@@ -269,7 +269,7 @@ impl XdgShellHandler for State {
             if window.output(&self.pinnacle) != requested_output
                 && let Some(output) = requested_output
             {
-                self.pinnacle.move_window_to_output(&window, output);
+                self.move_window_to_output(&window, output);
 
                 geometry_only = window.with_state(|state| state.layout_mode.is_fullscreen());
             }

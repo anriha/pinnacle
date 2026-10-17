@@ -133,7 +133,7 @@ impl XwmHandler for State {
             });
 
         if let Some(output) = self.pinnacle.focused_output() {
-            window.set_tags_to_output(output);
+            self.set_window_tags(&window, crate::window::tags_for_output(output));
         }
 
         self.pinnacle.map_window_to(&window, loc);

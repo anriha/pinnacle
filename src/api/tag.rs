@@ -110,12 +110,15 @@ pub fn add(
 }
 
 pub fn remove(state: &mut State, tags_to_remove: Vec<Tag>) {
-    for window in state.pinnacle.windows.iter() {
-        window.with_state_mut(|state| {
-            for tag_to_remove in tags_to_remove.iter() {
-                state.tags.shift_remove(tag_to_remove);
-            }
-        })
+    for window in state.pinnacle.windows.clone() {
+        let mut new_tags = window.with_state(|state| state.tags.clone());
+        let mut changed = false;
+        for tag_to_remove in tags_to_remove.iter() {
+            changed = new_tags.shift_remove(tag_to_remove) || changed;
+        }
+        if changed {
+            state.set_window_tags(&window, new_tags);
+        }
     }
 
     for output in state.pinnacle.outputs.clone() {

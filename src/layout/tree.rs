@@ -264,9 +264,7 @@ impl LayoutTree {
                 }
                 .to_i32_round();
                 let parent = tree.parent(node).unwrap();
-                let window_id = tree
-                    .get_node_context(parent)
-                    .and_then(|ctx| ctx.window_id);
+                let window_id = tree.get_node_context(parent).and_then(|ctx| ctx.window_id);
                 geos.push((rect, parent, window_id));
 
                 *counters.entry(node).or_default() += 1;
@@ -442,8 +440,7 @@ impl LayoutTree {
                         - original_flex_basis;
 
                     // Determine the parent's main axis for fixed-size detection
-                    let parent_flex_dir =
-                        self.taffy_tree.style(parent).unwrap().flex_direction;
+                    let parent_flex_dir = self.taffy_tree.style(parent).unwrap().flex_direction;
                     let is_row = matches!(
                         parent_flex_dir,
                         taffy::FlexDirection::Row | taffy::FlexDirection::RowReverse

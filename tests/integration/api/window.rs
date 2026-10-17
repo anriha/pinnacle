@@ -956,17 +956,29 @@ fn window_handle_set_tags() {
         assert_eq!(tags[0].name(), "2");
         assert_eq!(tags[1].name(), "3");
 
+        // The window is now only on inactive tags, so it loses focus.
+        match lang {
+            Lang::Rust => fixture.spawn_blocking(|| {
+                assert!(pinnacle_api::window::get_focused().is_none());
+            }),
+            Lang::Lua => spawn_lua_blocking! {
+                fixture,
+                assert(Window.get_focused() == nil)
+            },
+        }
+
         // Setting tags to empty shouldn't do anything
 
         match lang {
             Lang::Rust => fixture.spawn_blocking(|| {
-                pinnacle_api::window::get_focused()
+                pinnacle_api::window::get_all()
+                    .next()
                     .unwrap()
                     .set_tags::<pinnacle_api::tag::TagHandle>([]);
             }),
             Lang::Lua => spawn_lua_blocking! {
                 fixture,
-                Window.get_focused():set_tags({})
+                Window.get_all()[1]:set_tags({})
             },
         }
 

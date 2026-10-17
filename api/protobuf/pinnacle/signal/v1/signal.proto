@@ -134,6 +134,16 @@ message WindowUrgentResponse {
   bool urgent = 2;
 }
 
+message WindowTagsChangedRequest {
+  StreamControl control = 1;
+}
+message WindowTagsChangedResponse {
+  // The window whose tags changed.
+  uint32 window_id = 1;
+  // The window's new tag ids.
+  repeated uint32 tag_ids = 2;
+}
+
 message TagActiveRequest {
   StreamControl control = 1;
 }
@@ -181,6 +191,7 @@ service SignalService {
   rpc WindowCreated(stream WindowCreatedRequest) returns (stream WindowCreatedResponse);
   rpc WindowDestroyed(stream WindowDestroyedRequest) returns (stream WindowDestroyedResponse);
   rpc WindowUrgent(stream WindowUrgentRequest) returns (stream WindowUrgentResponse);
+  rpc WindowTagsChanged(stream WindowTagsChangedRequest) returns (stream WindowTagsChangedResponse);
 
   rpc TagActive(stream TagActiveRequest) returns (stream TagActiveResponse);
   rpc TagCreated(stream TagCreatedRequest) returns (stream TagCreatedResponse);
