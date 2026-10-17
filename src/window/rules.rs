@@ -65,7 +65,7 @@ impl WindowRuleState {
             return true;
         }
 
-        let request_id = self.current_request_id;
+        let request_id = self.current_request_id + 1;
         self.current_request_id += 1;
 
         let mut waiting_on = Vec::new();
