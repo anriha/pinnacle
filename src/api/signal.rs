@@ -15,13 +15,14 @@ use pinnacle_api_defs::pinnacle::{
             OutputPointerEnterRequest, OutputPointerEnterResponse, OutputPointerLeaveRequest,
             OutputPointerLeaveResponse, OutputResizeRequest, OutputResizeResponse, SignalRequest,
             StreamControl, TagActiveRequest, TagActiveResponse, TagCreatedRequest,
-            TagCreatedResponse, TagRemovedRequest, TagRemovedResponse, WindowCreatedRequest,
-            WindowCreatedResponse, WindowDestroyedRequest, WindowDestroyedResponse,
-            WindowFocusedRequest, WindowFocusedResponse, WindowLayoutModeChangedRequest,
-            WindowLayoutModeChangedResponse, WindowPointerEnterRequest, WindowPointerEnterResponse,
-            WindowPointerLeaveRequest, WindowPointerLeaveResponse, WindowTagsChangedRequest,
-            WindowTagsChangedResponse, WindowTitleChangedRequest, WindowTitleChangedResponse,
-            WindowUrgentRequest, WindowUrgentResponse,
+            TagCreatedResponse, TagOutputChangedRequest, TagOutputChangedResponse,
+            TagRemovedRequest, TagRemovedResponse, WindowCreatedRequest, WindowCreatedResponse,
+            WindowDestroyedRequest, WindowDestroyedResponse, WindowFocusedRequest,
+            WindowFocusedResponse, WindowLayoutModeChangedRequest, WindowLayoutModeChangedResponse,
+            WindowPointerEnterRequest, WindowPointerEnterResponse, WindowPointerLeaveRequest,
+            WindowPointerLeaveResponse, WindowTagsChangedRequest, WindowTagsChangedResponse,
+            WindowTitleChangedRequest, WindowTitleChangedResponse, WindowUrgentRequest,
+            WindowUrgentResponse,
         },
     },
     window,
@@ -66,6 +67,7 @@ pub struct SignalState {
     pub tag_active: TagActive,
     pub tag_created: TagCreated,
     pub tag_removed: TagRemoved,
+    pub tag_output_changed: TagOutputChanged,
 
     // Input
     pub input_device_added: InputDeviceAdded,
@@ -94,6 +96,7 @@ impl SignalState {
         self.tag_active.clear();
         self.tag_created.clear();
         self.tag_removed.clear();
+        self.tag_output_changed.clear();
 
         self.input_device_added.clear();
     }
@@ -542,6 +545,30 @@ impl Signal for TagRemoved {
 }
 
 #[derive(Debug, Default)]
+pub struct TagOutputChanged {
+    v1: SignalData<signal::v1::TagOutputChangedResponse>,
+}
+
+impl Signal for TagOutputChanged {
+    type Args<'a> = (&'a Tag, &'a Output);
+
+    /// Args: (tag, the output the tag is now on)
+    fn signal(&mut self, args: Self::Args<'_>) {
+        let (tag, output) = args;
+        self.v1.signal(|buf| {
+            buf.push_back(signal::v1::TagOutputChangedResponse {
+                tag_id: tag.id().to_inner(),
+                output_name: output.name(),
+            });
+        });
+    }
+
+    fn clear(&mut self) {
+        self.v1.instances.clear();
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct InputDeviceAdded {
     v1: SignalData<signal::v1::InputDeviceAddedResponse>,
 }
@@ -689,6 +716,7 @@ impl signal::v1::signal_service_server::SignalService for SignalService {
     type TagActiveStream = ResponseStream<TagActiveResponse>;
     type TagCreatedStream = ResponseStream<TagCreatedResponse>;
     type TagRemovedStream = ResponseStream<TagRemovedResponse>;
+    type TagOutputChangedStream = ResponseStream<TagOutputChangedResponse>;
 
     type InputDeviceAddedStream = ResponseStream<InputDeviceAddedResponse>;
 
@@ -898,6 +926,17 @@ impl signal::v1::signal_service_server::SignalService for SignalService {
 
         start_signal_stream(self.sender.clone(), in_stream, |state| {
             &mut state.pinnacle.signal_state.tag_removed.v1
+        })
+    }
+
+    async fn tag_output_changed(
+        &self,
+        request: Request<Streaming<TagOutputChangedRequest>>,
+    ) -> Result<Response<Self::TagOutputChangedStream>, Status> {
+        let in_stream = request.into_inner();
+
+        start_signal_stream(self.sender.clone(), in_stream, |state| {
+            &mut state.pinnacle.signal_state.tag_output_changed.v1
         })
     }
 

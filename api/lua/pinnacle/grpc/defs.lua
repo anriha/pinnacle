@@ -1371,6 +1371,13 @@ local pinnacle_v1_Backend = {
 ---@class pinnacle.signal.v1.TagRemovedResponse
 ---@field tag_id integer?
 
+---@class pinnacle.signal.v1.TagOutputChangedRequest
+---@field control pinnacle.signal.v1.StreamControl?
+
+---@class pinnacle.signal.v1.TagOutputChangedResponse
+---@field tag_id integer?
+---@field output_name string?
+
 ---@class pinnacle.signal.v1.InputDeviceAddedRequest
 ---@field control pinnacle.signal.v1.StreamControl?
 
@@ -1663,6 +1670,8 @@ pinnacle.signal.v1.TagCreatedRequest = {}
 pinnacle.signal.v1.TagCreatedResponse = {}
 pinnacle.signal.v1.TagRemovedRequest = {}
 pinnacle.signal.v1.TagRemovedResponse = {}
+pinnacle.signal.v1.TagOutputChangedRequest = {}
+pinnacle.signal.v1.TagOutputChangedResponse = {}
 pinnacle.signal.v1.InputDeviceAddedRequest = {}
 pinnacle.signal.v1.InputDeviceAddedResponse = {}
 pinnacle.tag = {}
@@ -3536,6 +3545,28 @@ pinnacle.signal.v1.SignalService.TagRemoved.response = ".pinnacle.signal.v1.TagR
 ---@return string | nil An error string, if any
 function Client:pinnacle_signal_v1_SignalService_TagRemoved(callback, done)
     return self:bidirectional_streaming_request(pinnacle.signal.v1.SignalService.TagRemoved, callback, done)
+end
+pinnacle.signal.v1.SignalService.TagOutputChanged = {}
+pinnacle.signal.v1.SignalService.TagOutputChanged.service = "pinnacle.signal.v1.SignalService"
+pinnacle.signal.v1.SignalService.TagOutputChanged.method = "TagOutputChanged"
+pinnacle.signal.v1.SignalService.TagOutputChanged.request = ".pinnacle.signal.v1.TagOutputChangedRequest"
+pinnacle.signal.v1.SignalService.TagOutputChanged.response = ".pinnacle.signal.v1.TagOutputChangedResponse"
+
+---Performs a bidirectional-streaming request.
+---
+---`callback` will be called with every streamed response.
+---
+---The raw client-to-server stream is returned to allow you to send encoded messages.
+---
+---@nodiscard
+---
+---@param callback fun(response: pinnacle.signal.v1.TagOutputChangedResponse, stream: grpc_client.h2.Stream)
+---@param done? fun()
+---
+---@return grpc_client.h2.Stream | nil
+---@return string | nil An error string, if any
+function Client:pinnacle_signal_v1_SignalService_TagOutputChanged(callback, done)
+    return self:bidirectional_streaming_request(pinnacle.signal.v1.SignalService.TagOutputChanged, callback, done)
 end
 pinnacle.signal.v1.SignalService.InputDeviceAdded = {}
 pinnacle.signal.v1.SignalService.InputDeviceAdded.service = "pinnacle.signal.v1.SignalService"

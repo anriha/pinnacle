@@ -87,8 +87,6 @@ impl XdgActivationHandler for State {
             return;
         };
 
-        debug!("xdg-activation: activation");
-
         if let Some(window) = self.pinnacle.window_for_surface(&surface).cloned() {
             match context {
                 ActivationContext::FocusIfPossible => {
@@ -101,8 +99,6 @@ impl XdgActivationHandler for State {
                             return;
                         };
 
-                        debug!("xdg-activation: focus if possible");
-
                         self.pinnacle.raise_window(window.clone());
 
                         self.pinnacle.keyboard_focus_stack.set_focus(window);
@@ -111,7 +107,6 @@ impl XdgActivationHandler for State {
                     }
                 }
                 ActivationContext::UrgentOnly => {
-                    debug!("xdg-activation: urgent");
                     window.with_state_mut(|state| state.urgent = true);
                     self.pinnacle
                         .signal_state

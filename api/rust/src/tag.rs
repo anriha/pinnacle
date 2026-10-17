@@ -258,6 +258,7 @@ pub fn connect_signal(signal: TagSignal) -> SignalHandle {
         TagSignal::Active(f) => signal_state.tag_active.add_callback(f),
         TagSignal::Created(f) => signal_state.tag_created.add_callback(f),
         TagSignal::Removed(f) => signal_state.tag_removed.add_callback(f),
+        TagSignal::OutputChanged(f) => signal_state.tag_output_changed.add_callback(f),
     }
 }
 

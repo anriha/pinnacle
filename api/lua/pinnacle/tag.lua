@@ -260,12 +260,14 @@ local signal_name_to_SignalName = {
     active = "TagActive",
     created = "TagCreated",
     removed = "TagRemoved",
+    output_changed = "TagOutputChanged",
 }
 
 ---@class pinnacle.tag.TagSignal Signals related to tag events.
 ---@field active fun(tag: pinnacle.tag.TagHandle, active: boolean)? A tag was set to active or not active.
 ---@field created fun(tag: pinnacle.tag.TagHandle)? A tag was created.
 ---@field removed fun(tag: pinnacle.tag.TagHandle)? A tag was removed.
+---@field output_changed fun(tag: pinnacle.tag.TagHandle, output: pinnacle.output.OutputHandle)? A tag was moved to a different output. `output` is the tag's new output.
 
 ---@class pinnacle.tag.MoveToOutputError
 ---`true` if the output does not exist.

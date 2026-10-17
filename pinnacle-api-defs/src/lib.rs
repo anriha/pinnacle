@@ -81,6 +81,7 @@ pub mod pinnacle {
                 TagActiveRequest,
                 TagCreatedRequest,
                 TagRemovedRequest,
+                TagOutputChangedRequest,
                 InputDeviceAddedRequest
             );
         }

@@ -167,6 +167,16 @@ message TagRemovedResponse {
   uint32 tag_id = 1;
 }
 
+message TagOutputChangedRequest {
+  StreamControl control = 1;
+}
+message TagOutputChangedResponse {
+  // The tag that is now on a different output.
+  uint32 tag_id = 1;
+  // The name of the output the tag is now on.
+  string output_name = 2;
+}
+
 message InputDeviceAddedRequest {
   StreamControl control = 1;
 }
@@ -196,6 +206,7 @@ service SignalService {
   rpc TagActive(stream TagActiveRequest) returns (stream TagActiveResponse);
   rpc TagCreated(stream TagCreatedRequest) returns (stream TagCreatedResponse);
   rpc TagRemoved(stream TagRemovedRequest) returns (stream TagRemovedResponse);
+  rpc TagOutputChanged(stream TagOutputChangedRequest) returns (stream TagOutputChangedResponse);
 
   rpc InputDeviceAdded(stream InputDeviceAddedRequest) returns (stream InputDeviceAddedResponse);
 }

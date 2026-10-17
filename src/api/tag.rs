@@ -208,6 +208,26 @@ where
         ));
     }
 
+    // Fire `TagOutputChanged` for tags whose owning output actually changes; tags
+    // already on the target output are a no-op and don't fire, mirroring the
+    // no-op rule of `set_window_tags`.
+    let moved_tags = tags_to_move
+        .iter()
+        .filter(|tag| {
+            tag.output(&state.pinnacle)
+                .is_none_or(|output| output.name() != new_output.name())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    for tag in &moved_tags {
+        state
+            .pinnacle
+            .signal_state
+            .tag_output_changed
+            .signal((tag, &new_output));
+    }
+
     for output in state.pinnacle.outputs.clone() {
         let mut changed = false;
 

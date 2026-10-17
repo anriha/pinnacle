@@ -165,6 +165,14 @@ local signals = {
         ---@type fun(response: table)
         on_response = nil,
     },
+    TagOutputChanged = {
+        ---@type grpc_client.h2.Stream?
+        sender = nil,
+        ---@type { callback_id: integer, callback: fun(tag: pinnacle.tag.TagHandle, output: pinnacle.output.OutputHandle) }[]
+        callbacks = {},
+        ---@type fun(response: table)
+        on_response = nil,
+    },
     InputDeviceAdded = {
         ---@type grpc_client.h2.Stream?
         sender = nil,
@@ -424,6 +432,18 @@ signals.TagRemoved.on_response = function(response)
 
     for _, callback in ipairs(callbacks) do
         protected_callback("TagRemoved", callback.callback, tag_handle, response.active)
+    end
+end
+
+signals.TagOutputChanged.on_response = function(response)
+    ---@diagnostic disable-next-line: invisible
+    local tag_handle = require("pinnacle.tag").handle.new(response.tag_id)
+    ---@diagnostic disable-next-line: invisible
+    local output_handle = require("pinnacle.output").handle.new(response.output_name)
+    local callbacks = require("pinnacle.util").deep_copy(signals.TagOutputChanged.callbacks)
+
+    for _, callback in ipairs(callbacks) do
+        protected_callback("TagOutputChanged", callback.callback, tag_handle, output_handle)
     end
 end
 

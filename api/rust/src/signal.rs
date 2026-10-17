@@ -426,6 +426,22 @@ signals! {
                 }
             },
         }
+        /// A tag was moved to a different output.
+        ///
+        /// Callbacks receive the tag and the output it moved to.
+        TagOutputChanged = {
+            enum_name = OutputChanged,
+            callback_type = Box<dyn FnMut(&TagHandle, &OutputHandle) + Send + 'static>,
+            client_request = tag_output_changed,
+            on_response = |response, callbacks| {
+                let tag_handle = TagHandle { id: response.tag_id };
+                let output_handle = OutputHandle { name: response.output_name };
+
+                for callback in callbacks {
+                    callback(&tag_handle, &output_handle);
+                }
+            },
+        }
     }
     /// Signals relating to input events.
     InputSignal => {
@@ -470,6 +486,7 @@ pub(crate) struct SignalState {
     pub(crate) tag_active: SignalData<TagActive>,
     pub(crate) tag_created: SignalData<TagCreated>,
     pub(crate) tag_removed: SignalData<TagRemoved>,
+    pub(crate) tag_output_changed: SignalData<TagOutputChanged>,
 
     pub(crate) input_device_added: SignalData<InputDeviceAdded>,
 }
@@ -504,6 +521,7 @@ impl SignalState {
             tag_active: SignalData::new(),
             tag_created: SignalData::new(),
             tag_removed: SignalData::new(),
+            tag_output_changed: SignalData::new(),
 
             input_device_added: SignalData::new(),
         }
@@ -531,6 +549,7 @@ impl SignalState {
         self.tag_active.reset();
         self.tag_created.reset();
         self.tag_removed.reset();
+        self.tag_output_changed.reset();
 
         self.input_device_added.reset();
     }
