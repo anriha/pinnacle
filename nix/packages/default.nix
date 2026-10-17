@@ -13,7 +13,7 @@
   mesa,
   xwayland,
   libinput,
-  libdisplay-info,
+  libdisplay-info_0_3,
   git,
   libgbm,
   rustc,
@@ -51,6 +51,12 @@ let
     };
     sourceRoot = "${src.name}/api/lua";
     knownRockspec = ../../api/lua/rockspecs/pinnacle-api-0.2.2-1.rockspec;
+
+    postConfigure = ''
+      substituteInPlace "$rockspecFilename" \
+        --replace-fail '"compat53 ~> 0.14"' '"compat53 >= 0.14"'
+    '';
+
     propagatedBuildInputs = with lua54Packages; [
       cqueues
       http
@@ -99,7 +105,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     libinput
     mesa
     xwayland
-    libdisplay-info
+    libdisplay-info_0_3
     libgbm
     lua5_4
 
