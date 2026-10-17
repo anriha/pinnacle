@@ -54,9 +54,7 @@ let
 
     postConfigure = ''
       substituteInPlace "$rockspecFilename" \
-        --replace-fail '"compat53 ~> 0.14"' '"compat53 >= 0.14"' \
-        --replace-fail '"cqueues ~> 20200726"' '"cqueues >= 20200726"' \
-        --replace-fail '"luaposix ~> 36.3"' '"luaposix >= 36.3"'
+        --replace-fail '"compat53 ~> 0.14"' '"compat53 >= 0.14"'
     '';
 
     propagatedBuildInputs = with lua54Packages; [

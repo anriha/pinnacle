@@ -43,7 +43,8 @@ pub struct Command {
 /// The result of spawning a [`Command`].
 #[derive(Debug)]
 pub struct Child {
-    pid: u32,
+    /// This process's ID.
+    pub pid: u32,
     /// This process's standard input.
     ///
     /// This will only be `Some` if [`Command::pipe_stdin`] was called before spawning.
