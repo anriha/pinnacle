@@ -11,6 +11,9 @@ pub struct StyleDiff {
     pub flex_direction: Option<taffy::FlexDirection>,
     pub flex_basis: Option<taffy::Dimension>,
     pub margin: Option<taffy::Rect<taffy::LengthPercentageAuto>>,
+    pub size: Option<taffy::Size<taffy::Dimension>>,
+    pub min_size: Option<taffy::Size<taffy::Dimension>>,
+    pub max_size: Option<taffy::Size<taffy::Dimension>>,
 }
 
 impl Diffable for taffy::Style {
@@ -22,6 +25,9 @@ impl Diffable for taffy::Style {
                 .then_some(newer.flex_direction),
             flex_basis: (self.flex_basis != newer.flex_basis).then_some(newer.flex_basis),
             margin: (self.margin != newer.margin).then_some(newer.margin),
+            size: (self.size != newer.size).then_some(newer.size),
+            min_size: (self.min_size != newer.min_size).then_some(newer.min_size),
+            max_size: (self.max_size != newer.max_size).then_some(newer.max_size),
         }
     }
 }

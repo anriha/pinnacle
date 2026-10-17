@@ -10,6 +10,8 @@ local log = require("pinnacle.log")
 ---@field output pinnacle.output.OutputHandle
 ---@field window_count integer
 ---@field tags pinnacle.tag.TagHandle[]
+---@field window_ids integer[] The window IDs in positional order.
+---@field app_ids string[] The app IDs in positional order.
 
 ---@alias pinnacle.layout.LayoutDir
 ---| "row" Lays out windows in a row horizontally.
@@ -36,6 +38,21 @@ local log = require("pinnacle.log")
 ---@field size_proportion number?
 ---Child layout nodes.
 ---@field children pinnacle.layout.LayoutNode[]?
+---A fixed width for this node in pixels. Overrides flex proportions.
+---@field fixed_width number?
+---A fixed height for this node in pixels. Overrides flex proportions.
+---@field fixed_height number?
+---Minimum width for this node in pixels.
+---@field min_width number?
+---Minimum height for this node in pixels.
+---@field min_height number?
+---Maximum width for this node in pixels.
+---@field max_width number?
+---Maximum height for this node in pixels.
+---@field max_height number?
+---The window ID to assign to this leaf node. When set, the compositor matches by ID
+---rather than positional order.
+---@field window_id integer?
 
 ---A layout generator.
 ---@class pinnacle.layout.LayoutGenerator
@@ -831,8 +848,15 @@ local function layout_node_to_api_node(node)
                     and defs.pinnacle.layout.v1.FlexDir.FLEX_DIR_ROW
                 or defs.pinnacle.layout.v1.FlexDir.FLEX_DIR_COLUMN,
             gaps = gaps,
+            fixed_width = node.fixed_width,
+            fixed_height = node.fixed_height,
+            min_width = node.min_width,
+            min_height = node.min_height,
+            max_width = node.max_width,
+            max_height = node.max_height,
         },
         children = children,
+        window_id = node.window_id,
     }
 end
 
@@ -888,6 +912,8 @@ function layout.manage(on_layout)
             output = require("pinnacle.output").handle.new(response.output_name),
             window_count = response.window_count,
             tags = require("pinnacle.tag").handle.new_from_table(response.tag_ids or {}),
+            window_ids = response.window_ids or {},
+            app_ids = response.app_ids or {},
         }
 
         local success, ret = pcall(on_layout, args)

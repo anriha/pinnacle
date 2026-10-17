@@ -70,6 +70,8 @@ pub fn manage(
                     .into_iter()
                     .map(|id| TagHandle { id })
                     .collect(),
+                window_ids: response.window_ids,
+                app_ids: response.app_ids,
             };
             let tree_response = on_layout(args);
             from_client
@@ -130,6 +132,7 @@ struct LayoutNodeInner {
     traversal_overrides: HashMap<u32, Vec<u32>>,
     style: Style,
     children: Vec<LayoutNode>,
+    window_id: Option<u32>,
 }
 
 impl LayoutNodeInner {
@@ -142,8 +145,15 @@ impl LayoutNodeInner {
                 layout_dir: LayoutDir::Row,
                 gaps: Gaps::default(),
                 size_proportion: 1.0,
+                fixed_width: None,
+                fixed_height: None,
+                min_width: None,
+                min_height: None,
+                max_width: None,
+                max_height: None,
             },
             children: Vec::new(),
+            window_id: None,
         }
     }
 }
@@ -229,6 +239,45 @@ impl LayoutNode {
     /// Sets the gaps this node places around its children.
     pub fn set_gaps(&self, gaps: impl Into<Gaps>) {
         self.inner.borrow_mut().style.gaps = gaps.into();
+    }
+
+    /// Sets a fixed width for this node in pixels.
+    pub fn set_fixed_width(&self, width: f32) {
+        self.inner.borrow_mut().style.fixed_width = Some(width);
+    }
+
+    /// Sets a fixed height for this node in pixels.
+    pub fn set_fixed_height(&self, height: f32) {
+        self.inner.borrow_mut().style.fixed_height = Some(height);
+    }
+
+    /// Sets the minimum width for this node in pixels.
+    pub fn set_min_width(&self, width: f32) {
+        self.inner.borrow_mut().style.min_width = Some(width);
+    }
+
+    /// Sets the minimum height for this node in pixels.
+    pub fn set_min_height(&self, height: f32) {
+        self.inner.borrow_mut().style.min_height = Some(height);
+    }
+
+    /// Sets the maximum width for this node in pixels.
+    pub fn set_max_width(&self, width: f32) {
+        self.inner.borrow_mut().style.max_width = Some(width);
+    }
+
+    /// Sets the maximum height for this node in pixels.
+    pub fn set_max_height(&self, height: f32) {
+        self.inner.borrow_mut().style.max_height = Some(height);
+    }
+
+    /// Sets the window ID that should be assigned to this leaf node.
+    ///
+    /// When set, the compositor will assign the window with this ID to this
+    /// leaf node's geometry rather than using positional assignment.
+    /// For non-leaf nodes, this value is ignored.
+    pub fn set_window_id(&self, id: u32) {
+        self.inner.borrow_mut().window_id = Some(id);
     }
 }
 
@@ -318,18 +367,23 @@ struct Style {
     layout_dir: LayoutDir,
     gaps: Gaps,
     size_proportion: f32,
+    fixed_width: Option<f32>,
+    fixed_height: Option<f32>,
+    min_width: Option<f32>,
+    min_height: Option<f32>,
+    max_width: Option<f32>,
+    max_height: Option<f32>,
 }
 
 impl From<LayoutNode> for layout::v1::LayoutNode {
     fn from(value: LayoutNode) -> Self {
         fn api_node_from_layout_node(node: LayoutNode) -> layout::v1::LayoutNode {
-            let style = node.inner.borrow().style.clone();
+            let inner = node.inner.borrow();
+            let style = inner.style.clone();
 
             layout::v1::LayoutNode {
-                label: node.inner.borrow().label.clone(),
-                traversal_overrides: node
-                    .inner
-                    .borrow()
+                label: inner.label.clone(),
+                traversal_overrides: inner
                     .traversal_overrides
                     .iter()
                     .map(|(idx, overrides)| {
@@ -341,28 +395,33 @@ impl From<LayoutNode> for layout::v1::LayoutNode {
                         )
                     })
                     .collect(),
-                traversal_index: node.inner.borrow().traversal_index,
+                traversal_index: inner.traversal_index,
                 style: Some(layout::v1::NodeStyle {
-                    flex_dir: match node.inner.borrow().style.layout_dir {
+                    flex_dir: match style.layout_dir {
                         LayoutDir::Row => layout::v1::FlexDir::Row,
                         LayoutDir::Column => layout::v1::FlexDir::Column,
                     }
                     .into(),
-                    size_proportion: node.inner.borrow().style.size_proportion,
+                    size_proportion: style.size_proportion,
                     gaps: Some(layout::v1::Gaps {
                         left: style.gaps.left,
                         right: style.gaps.right,
                         top: style.gaps.top,
                         bottom: style.gaps.bottom,
                     }),
+                    fixed_width: style.fixed_width,
+                    fixed_height: style.fixed_height,
+                    min_width: style.min_width,
+                    min_height: style.min_height,
+                    max_width: style.max_width,
+                    max_height: style.max_height,
                 }),
-                children: node
-                    .inner
-                    .borrow()
+                children: inner
                     .children
                     .iter()
                     .map(|node| api_node_from_layout_node(node.clone()))
                     .collect(),
+                window_id: inner.window_id,
             }
         }
         api_node_from_layout_node(value)
@@ -378,6 +437,10 @@ pub struct LayoutArgs {
     pub window_count: u32,
     /// The *focused* tags on the output.
     pub tags: Vec<TagHandle>,
+    /// The IDs of the windows being laid out, in positional order.
+    pub window_ids: Vec<u32>,
+    /// The app IDs of the windows being laid out, in positional order.
+    pub app_ids: Vec<String>,
 }
 
 /// Types that can generate layouts by computing a tree of [`LayoutNode`]s.

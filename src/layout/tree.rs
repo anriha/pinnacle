@@ -21,6 +21,7 @@ pub struct LayoutNode {
     pub traversal_overrides: HashMap<u32, Vec<u32>>,
     pub style: taffy::Style,
     pub children: Vec<LayoutNode>,
+    pub window_id: Option<u32>,
 }
 
 impl std::fmt::Debug for LayoutNode {
@@ -89,6 +90,7 @@ struct NodeContext {
     traversal_index: u32,
     traversal_overrides: HashMap<u32, Vec<u32>>,
     original_flex_basis: f32,
+    window_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -139,6 +141,7 @@ impl LayoutTree {
                 traversal_index: node.traversal_index,
                 traversal_overrides: node.traversal_overrides,
                 original_flex_basis,
+                window_id: node.window_id,
             }),
         )
         .unwrap();
@@ -229,9 +232,9 @@ impl LayoutTree {
         &mut self,
         width: u32,
         height: u32,
-    ) -> Vec<(Rectangle<i32, Logical>, taffy::NodeId)> {
+    ) -> Vec<(Rectangle<i32, Logical>, taffy::NodeId, Option<u32>)> {
         fn compute_geos_rec(
-            geos: &mut Vec<(Rectangle<i32, Logical>, taffy::NodeId)>,
+            geos: &mut Vec<(Rectangle<i32, Logical>, taffy::NodeId, Option<u32>)>,
             tree: &taffy::TaffyTree<NodeContext>,
             node: taffy::NodeId,
             offset_x: f64,
@@ -260,7 +263,11 @@ impl LayoutTree {
                     size: smithay::utils::Size::from((size.width, size.height)),
                 }
                 .to_i32_round();
-                geos.push((rect, tree.parent(node).unwrap()));
+                let parent = tree.parent(node).unwrap();
+                let window_id = tree
+                    .get_node_context(parent)
+                    .and_then(|ctx| ctx.window_id);
+                geos.push((rect, parent, window_id));
 
                 *counters.entry(node).or_default() += 1;
 
@@ -408,6 +415,7 @@ impl LayoutTree {
                                 traversal_index: val.traversal_index,
                                 traversal_overrides: val.traversal_overrides,
                                 original_flex_basis,
+                                window_id: val.window_id,
                             },
                         )
                         .unwrap();
@@ -462,6 +470,9 @@ impl LayoutTree {
                                 flex_direction,
                                 flex_basis,
                                 margin,
+                                size,
+                                min_size,
+                                max_size,
                             },
                     } = val;
 
@@ -475,6 +486,15 @@ impl LayoutTree {
                     }
                     if let Some(margin) = margin {
                         style.margin = margin;
+                    }
+                    if let Some(size) = size {
+                        style.size = size;
+                    }
+                    if let Some(min_size) = min_size {
+                        style.min_size = min_size;
+                    }
+                    if let Some(max_size) = max_size {
+                        style.max_size = max_size;
                     }
                     self.taffy_tree.set_style(to_update, style).unwrap();
 
@@ -982,6 +1002,7 @@ struct LayoutNodeData {
     traversal_index: u32,
     traversal_overrides: HashMap<u32, Vec<u32>>,
     style: taffy::Style,
+    window_id: Option<u32>,
 }
 
 struct LayoutNodeDataDiff {
@@ -1037,6 +1058,7 @@ impl LayoutNode {
             traversal_index: self.traversal_index,
             traversal_overrides: self.traversal_overrides.clone(),
             style: self.style.clone(),
+            window_id: self.window_id,
         };
 
         *slab_node.data() = data;

@@ -45,10 +45,8 @@ impl Pinnacle {
             (zone.size.w, zone.size.h)
         };
 
-        let (geometries, nodes): (Vec<_>, Vec<_>) = tree
-            .compute_geos(output_width as u32, output_height as u32)
-            .into_iter()
-            .unzip();
+        let geos_with_nodes: Vec<(Rectangle<i32, Logical>, taffy::NodeId, Option<u32>)> = tree
+            .compute_geos(output_width as u32, output_height as u32);
 
         let (windows_on_foc_tags, to_unmap) = output.with_state(|state| {
             let focused_tags = state.focused_tags().cloned().collect::<IndexSet<_>>();
@@ -84,7 +82,7 @@ impl Pinnacle {
             }
         }
 
-        let tiled_windows = windows_on_foc_tags
+        let tiled_windows: Vec<WindowElement> = windows_on_foc_tags
             .iter()
             .filter(|win| !win.is_x11_override_redirect())
             .filter(|win| {
@@ -92,7 +90,8 @@ impl Pinnacle {
                     state.layout_mode.is_tiled() || state.layout_mode.is_spilled()
                 })
             })
-            .cloned();
+            .cloned()
+            .collect();
 
         let Some(output_geo) = self.space.output_geometry(output) else {
             warn!("Cannot update_windows_from_tree without output geo");
@@ -101,9 +100,64 @@ impl Pinnacle {
 
         let non_exclusive_geo = layer_map_for_output(output).non_exclusive_zone();
 
-        let spilled_windows = tiled_windows
-            .clone()
-            .skip(geometries.len())
+        // Build a map of window_id -> window for ID-based matching
+        let window_map: HashMap<u32, WindowElement> = tiled_windows
+            .iter()
+            .map(|win| (win.with_state(|s| s.id.0), win.clone()))
+            .collect();
+
+        // Track which windows have been assigned (by ID) to avoid double-assignment
+        let mut assigned_ids: HashSet<u32> = HashSet::new();
+        let mut positional_iter = tiled_windows.iter().cloned();
+
+        // Assign geometries, matching by window_id where specified,
+        // falling back to positional assignment.
+        let mut wins_and_geos_tiled: Vec<(WindowElement, Rectangle<i32, Logical>, bool)> = Vec::new();
+        let mut all_nodes: Vec<taffy::NodeId> = Vec::new();
+
+        for (geo, node, maybe_wid) in geos_with_nodes {
+            let win = if let Some(wid) = maybe_wid {
+                // Try ID-based matching
+                if let Some(win) = window_map.get(&wid) {
+                    assigned_ids.insert(wid);
+                    Some(win.clone())
+                } else {
+                    // window_id specified but window not found, fall back to positional
+                    None
+                }
+            } else {
+                None
+            };
+
+            // If no window was assigned by ID, try positional
+            let win = win.or_else(|| {
+                loop {
+                    let next = positional_iter.next()?;
+                    let w_id = next.with_state(|s| s.id.0);
+                    if !assigned_ids.contains(&w_id) {
+                        assigned_ids.insert(w_id);
+                        return Some(next);
+                    }
+                }
+            });
+
+            let Some(win) = win else {
+                // No more unassigned windows — skip this geometry (empty space)
+                continue;
+            };
+
+            let mut adjusted_geo = geo;
+            adjusted_geo.loc += output_geo.loc + non_exclusive_geo.loc;
+            wins_and_geos_tiled.push((win, adjusted_geo, true));
+            all_nodes.push(node);
+        }
+
+        // Remaining unassigned windows become spilled
+        let spilled_windows = positional_iter
+            .filter(|w| {
+                let w_id = w.with_state(|s| s.id.0);
+                !assigned_ids.contains(&w_id)
+            })
             .map(|w| {
                 w.with_state_mut(|s| s.layout_mode.set_spilled(true));
                 let geo = self
@@ -113,19 +167,9 @@ impl Pinnacle {
             })
             .collect::<Vec<_>>();
 
-        let mut zipped = tiled_windows.zip(geometries.into_iter().map(|mut geo| {
-            geo.loc += output_geo.loc + non_exclusive_geo.loc;
-            geo
-        }));
-
-        let wins_and_geos_tiled = zipped
-            .by_ref()
-            .map(|(win, geo)| (win, geo, true))
-            .collect::<Vec<_>>();
-
         let just_wins = wins_and_geos_tiled.iter().map(|(win, ..)| win);
 
-        for (win, node) in just_wins.zip(nodes) {
+        for (win, node) in just_wins.zip(all_nodes) {
             win.with_state_mut(|state| state.layout_node = Some(node));
         }
 
@@ -165,18 +209,6 @@ impl Pinnacle {
             output,
             transaction_builder.into_pending(unmapping, self.layout_state.pending_swap, is_resize),
         );
-
-        let (remaining_wins, _remaining_geos) = zipped.unzip::<_, _, Vec<_>, Vec<_>>();
-
-        for win in remaining_wins {
-            let to_schedule = self.space.outputs_for_element(&win);
-            self.space.unmap_elem(&win);
-            self.loop_handle.insert_idle(move |state| {
-                for output in to_schedule {
-                    state.schedule_render(&output);
-                }
-            });
-        }
     }
 
     pub fn swap_window_positions(&mut self, win1: &WindowElement, win2: &WindowElement) {
@@ -344,6 +376,8 @@ pub struct LayoutInfo {
     pub output_name: OutputName,
     pub window_count: u32,
     pub tag_ids: Vec<TagId>,
+    pub window_ids: Vec<u32>,
+    pub app_ids: Vec<String>,
 }
 
 impl State {
@@ -492,6 +526,26 @@ impl Pinnacle {
             })
             .count();
 
+        let window_ids: Vec<u32> = windows_on_foc_tags
+            .iter()
+            .filter(|win| {
+                win.with_state(|state| {
+                    state.layout_mode.is_tiled() || state.layout_mode.is_spilled()
+                })
+            })
+            .map(|win| win.with_state(|state| state.id.0))
+            .collect();
+
+        let app_ids: Vec<String> = windows_on_foc_tags
+            .iter()
+            .filter(|win| {
+                win.with_state(|state| {
+                    state.layout_mode.is_tiled() || state.layout_mode.is_spilled()
+                })
+            })
+            .map(|win| win.class().unwrap_or_default())
+            .collect();
+
         let tag_ids = output.with_state(|state| state.focused_tags().map(|tag| tag.id()).collect());
 
         let _ = sender.send(LayoutInfo {
@@ -499,6 +553,8 @@ impl Pinnacle {
             output_name: OutputName(output.name()),
             window_count: window_count as u32,
             tag_ids,
+            window_ids,
+            app_ids,
         });
     }
 }
