@@ -196,6 +196,15 @@ impl State {
             }
             if focused {
                 self.pinnacle.signal_state.window_focused.signal(win);
+
+                let was_urgent = win.with_state(|state| state.urgent);
+                if was_urgent {
+                    win.with_state_mut(|state| state.urgent = false);
+                    self.pinnacle
+                        .signal_state
+                        .window_urgent
+                        .signal((win, false));
+                }
             }
         }
 

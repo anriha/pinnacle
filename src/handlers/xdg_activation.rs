@@ -10,7 +10,10 @@ use smithay::{
 };
 use tracing::debug;
 
-use crate::state::State;
+use crate::{
+    api::signal::Signal,
+    state::{State, WithState},
+};
 
 pub const XDG_ACTIVATION_TOKEN_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -104,7 +107,11 @@ impl XdgActivationHandler for State {
                     }
                 }
                 ActivationContext::UrgentOnly => {
-                    // TODO: add urgent state to windows, use in a focus border/taskbar flash
+                    window.with_state_mut(|state| state.urgent = true);
+                    self.pinnacle
+                        .signal_state
+                        .window_urgent
+                        .signal((&window, true));
                 }
             }
         } else if let Some(unmapped) = self.pinnacle.unmapped_window_for_surface_mut(&surface) {

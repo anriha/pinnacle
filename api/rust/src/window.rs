@@ -166,6 +166,7 @@ pub fn connect_signal(signal: WindowSignal) -> SignalHandle {
         }
         WindowSignal::Created(f) => signal_state.window_created.add_callback(f),
         WindowSignal::Destroyed(f) => signal_state.window_destroyed.add_callback(f),
+        WindowSignal::Urgent(f) => signal_state.window_urgent.add_callback(f),
     }
 }
 

@@ -124,6 +124,16 @@ message WindowDestroyedResponse {
   string app_id = 3;
 }
 
+message WindowUrgentRequest {
+  StreamControl control = 1;
+}
+message WindowUrgentResponse {
+  // The window whose urgency state changed.
+  uint32 window_id = 1;
+  // The new urgency state. true = urgent, false = not urgent.
+  bool urgent = 2;
+}
+
 message TagActiveRequest {
   StreamControl control = 1;
 }
@@ -170,6 +180,7 @@ service SignalService {
   rpc WindowLayoutModeChanged(stream WindowLayoutModeChangedRequest) returns (stream WindowLayoutModeChangedResponse);
   rpc WindowCreated(stream WindowCreatedRequest) returns (stream WindowCreatedResponse);
   rpc WindowDestroyed(stream WindowDestroyedRequest) returns (stream WindowDestroyedResponse);
+  rpc WindowUrgent(stream WindowUrgentRequest) returns (stream WindowUrgentResponse);
 
   rpc TagActive(stream TagActiveRequest) returns (stream TagActiveResponse);
   rpc TagCreated(stream TagCreatedRequest) returns (stream TagCreatedResponse);

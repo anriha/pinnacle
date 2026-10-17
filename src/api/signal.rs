@@ -18,7 +18,7 @@ use pinnacle_api_defs::pinnacle::{
             WindowFocusedRequest, WindowFocusedResponse, WindowLayoutModeChangedRequest,
             WindowLayoutModeChangedResponse, WindowPointerEnterRequest, WindowPointerEnterResponse,
             WindowPointerLeaveRequest, WindowPointerLeaveResponse, WindowTitleChangedRequest,
-            WindowTitleChangedResponse,
+            WindowTitleChangedResponse, WindowUrgentRequest, WindowUrgentResponse,
         },
     },
     window,
@@ -56,6 +56,7 @@ pub struct SignalState {
     pub window_layout_changed: WindowLayoutChanged,
     pub window_created: WindowCreated,
     pub window_destroyed: WindowDestroyed,
+    pub window_urgent: WindowUrgent,
 
     // Tag
     pub tag_active: TagActive,
@@ -83,6 +84,7 @@ impl SignalState {
         self.window_layout_changed.clear();
         self.window_created.clear();
         self.window_destroyed.clear();
+        self.window_urgent.clear();
 
         self.tag_active.clear();
         self.tag_created.clear();
@@ -424,6 +426,29 @@ impl Signal for WindowDestroyed {
 }
 
 #[derive(Debug, Default)]
+pub struct WindowUrgent {
+    v1: SignalData<signal::v1::WindowUrgentResponse>,
+}
+
+impl Signal for WindowUrgent {
+    type Args<'a> = (&'a WindowElement, bool);
+
+    fn signal(&mut self, args: Self::Args<'_>) {
+        let (window, urgent) = args;
+        self.v1.signal(|buf| {
+            buf.push_back(signal::v1::WindowUrgentResponse {
+                window_id: window.with_state(|state| state.id.0),
+                urgent,
+            });
+        });
+    }
+
+    fn clear(&mut self) {
+        self.v1.instances.clear();
+    }
+}
+
+#[derive(Debug, Default)]
 pub struct TagActive {
     v1: SignalData<signal::v1::TagActiveResponse>,
 }
@@ -629,6 +654,7 @@ impl signal::v1::signal_service_server::SignalService for SignalService {
     type WindowLayoutModeChangedStream = ResponseStream<WindowLayoutModeChangedResponse>;
     type WindowCreatedStream = ResponseStream<WindowCreatedResponse>;
     type WindowDestroyedStream = ResponseStream<WindowDestroyedResponse>;
+    type WindowUrgentStream = ResponseStream<WindowUrgentResponse>;
 
     type TagActiveStream = ResponseStream<TagActiveResponse>;
     type TagCreatedStream = ResponseStream<TagCreatedResponse>;
@@ -787,6 +813,17 @@ impl signal::v1::signal_service_server::SignalService for SignalService {
 
         start_signal_stream(self.sender.clone(), in_stream, |state| {
             &mut state.pinnacle.signal_state.window_destroyed.v1
+        })
+    }
+
+    async fn window_urgent(
+        &self,
+        request: Request<Streaming<WindowUrgentRequest>>,
+    ) -> Result<Response<Self::WindowUrgentStream>, Status> {
+        let in_stream = request.into_inner();
+
+        start_signal_stream(self.sender.clone(), in_stream, |state| {
+            &mut state.pinnacle.signal_state.window_urgent.v1
         })
     }
 
