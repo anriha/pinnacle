@@ -50,12 +50,13 @@ let
       ];
     };
     sourceRoot = "${src.name}/api/lua";
-    knownRockspec = ../../api/lua/rockspecs/pinnacle-api-0.2.2-1.rockspec;
+    knownRockspec = ../../api/lua/rockspecs/pinnacle-api-0.2.3-1.rockspec;
 
     postConfigure = ''
       substituteInPlace "$rockspecFilename" \
         --replace-fail '"compat53 ~> 0.14"' '"compat53 >= 0.14"' \
         --replace-fail '"cqueues ~> 20200726"' '"cqueues >= 20200726"' \
+        --replace-fail '"lua-protobuf ~> 0.5"' '"lua-protobuf >= 0.5"' \
         --replace-fail '"luaposix ~> 36.3"' '"luaposix >= 36.3"'
     '';
 
