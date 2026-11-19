@@ -396,7 +396,7 @@ impl Pinnacle {
 
         for surface in surfaces {
             self.color_management_state
-                .preferred_changed(&surface, description.clone());
+                .preferred_changed(&surface, description);
         }
     }
 

@@ -1643,7 +1643,7 @@ impl Udev {
                 .and_then(|program| {
                     renderer
                         .as_gles_renderer()
-                        .compile_custom_texture_shader(&crate::hdr::linear_texture_shader(), &[])
+                        .compile_custom_texture_shader(crate::hdr::linear_texture_shader(), &[])
                         .map(|linear| (program, linear))
                 });
             match compiled {
