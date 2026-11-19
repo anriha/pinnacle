@@ -81,6 +81,7 @@
 
             # build time stuff
             protobuf
+            just
             lua54Packages.luarocks
             lua5_4
 

@@ -1,5 +1,16 @@
 name: CI
 
+# Everything runs inside the podman job container, never on the host: the job
+# gets the repository checkout and a throwaway image, not nina's store, PATH or
+# daemon. nix is installed into that image by the job itself, because the plain
+# `nixos/nix` image has no node and cannot run `actions/checkout`, and because
+# the flake is the only thing that knows about libdisplay-info 0.3 (Ubuntu 24.04
+# ships 0.1.x, so an apt build cannot work).
+#
+# Cost of the isolation: no persistent store, so every run substitutes and
+# compiles from scratch. If that gets annoying, the fix is a persistent volume
+# for /nix owned by the CI only, not a move back to the host runner.
+
 on:
   push:
     branches: ["main"]
@@ -13,100 +24,64 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # `just` and `cargo` want a writable runtime dir; a bare container has none.
+  XDG_RUNTIME_DIR: ${{ github.workspace }}/.runtime
 
 jobs:
-  build-and-test:
-    runs-on: nixos-host
-    name: Build and test
+  build-and-lint:
+    runs-on: pinnacle-ci
+    name: Build, test, clippy
     steps:
       - uses: actions/checkout@v4
-      # The derivation runs the integration suite in checkPhase, so this covers
-      # build + test in one cached step. A published override only rebuilds when
-      # the source or the lockfile actually changed.
-      - name: nix build
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            sandbox = false
+
+      # The derivation runs the integration suite in checkPhase, so this is
+      # build and test in one step.
+      - name: Build and test
         run: nix build .#pinnacle --no-link --print-build-logs
 
-  lint:
-    runs-on: nixos-host
-    name: Clippy
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rust-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml', 'flake.lock') }}
-          restore-keys: |
-            rust-${{ hashFiles('Cargo.lock') }}-
-            rust-
-
-      # `cargo fmt --check` is not a job yet: the HDR work left about 25 files
-      # unformatted, so the check would fail on the first run for reasons that
-      # predate it. Run rustfmt across the tree once, then add the step back.
+      # `-A unused` covers a handful of dead-code warnings the HDR work left
+      # behind; everything else, clippy lints included, still fails the job.
       - name: Clippy
-        # `-A unused` covers a handful of dead-code warnings the HDR work left
-        # behind; everything else, clippy lints included, still fails the job.
-        run: nix develop -c cargo clippy --all -- -D warnings -A unused
-
-  wlcs:
-    runs-on: nixos-host
-    name: "WLCS: ${{ matrix.job_name }}"
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - job_name: "Core"
-            gtest_filter:
-              "SelfTest*:FrameSubmission*\
-              :-FrameSubmission.when_client_endlessly_requests_frame_then_callbacks_are_throttled"
-          - job_name: "Output"
-            gtest_filter: "XdgOutputV1Test*"
-          - job_name: "WlOutput"
-            gtest_filter: "WlOutputTest*"
-          - job_name: "Viewporter"
-            gtest_filter:
-              "WpViewporter*\
-              :-WpViewporterTest.when_destination_is_not_set_source_must_have_integer_size\
-              :WpViewporterTest.source_rectangle_out_of_buffer_bounds_raises_protocol_error\
-              :WpViewporterTest.assigning_a_viewport_to_a_surface_with_an_existing_viewport_is_an_error"
-          - job_name: "Pointer constraints"
-            gtest_filter:
-              "PointerConstraints.*\
-              :-PointerConstraints.when_surface_is_reselected_persistent_confined_pointer_gets_notifications\
-              :PointerConstraints.when_surface_is_unselected_confined_pointer_gets_unconfined_notification\
-              :PointerConstraints.when_surface_is_reselected_persistent_locked_pointer_gets_notifications\
-              :PointerConstraints.when_surface_is_unselected_locked_pointer_gets_unlocked_notification"
-          - job_name: "Foreign toplevel"
-            gtest_filter:
-              "ForeignToplevelManagerTest.does_not_detect_toplevels_when_test_creates_none\
-              :ForeignToplevelManagerTest.detects_toplevel_from_same_client\
-              :ForeignToplevelManagerTest.detects_toplevel_from_different_client\
-              :ForeignToplevelManagerTest.detects_toplevel_created_after_manager\
-              :ForeignToplevelManagerTest.detects_multiple_toplevels_from_multiple_clients"
-          - job_name: "Layer shell: anchoring"
-            gtest_filter:
-              "Anchors/LayerSurfaceErrorsTest.specifying_zero_size_without_corresponding_anchors_is_an_error*\
-              :Anchor/LayerSurfaceLayoutTest.is_positioned_correctly_when_explicit_size_does_not_match_buffer_size*\
-              :Anchor/LayerSurfaceLayoutTest.is_positioned_correctly_when_layout_changed*\
-              :Anchor/LayerSurfaceLayoutTest.is_positioned_correctly_after_multiple_changes*\
-              :Anchor/LayerSurfaceLayoutTest.surfaces_with_exclusive_zone_set_to_negative_one_do_not_respect_other_exclusive_zones*"
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Cache the compiled wlcs
-        uses: actions/cache@v4
-        with:
-          path: wlcs
-          key: wlcs-${{ hashFiles('./justfile') }}
-
-      - name: Run
-        env:
-          # just wants a writable runtime dir; the runner's /run/user/* is not
-          # guaranteed to be writable for the service user.
-          XDG_RUNTIME_DIR: ${{ github.workspace }}/.runtime
         run: |
           mkdir -p "$XDG_RUNTIME_DIR"
-          nix develop -c just wlcs --gtest_filter="${{ matrix.gtest_filter }}"
+          nix develop -c cargo clippy --all -- -D warnings -A unused
+
+  wlcs:
+    runs-on: pinnacle-ci
+    name: WLCS conformance
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            sandbox = false
+
+      # One job for all groups: `just wlcs` compiles the pinned wlcs revision
+      # and the module once, and every later group reuses that build. The
+      # filters are the upstream ones, unchanged.
+      - name: Run the groups
+        run: |
+          mkdir -p "$XDG_RUNTIME_DIR"
+          filters=(
+            "SelfTest*:FrameSubmission*:-FrameSubmission.when_client_endlessly_requests_frame_then_callbacks_are_throttled"
+            "XdgOutputV1Test*"
+            "WlOutputTest*"
+            "WpViewporter*:-WpViewporterTest.when_destination_is_not_set_source_must_have_integer_size:WpViewporterTest.source_rectangle_out_of_buffer_bounds_raises_protocol_error:WpViewporterTest.assigning_a_viewport_to_a_surface_with_an_existing_viewport_is_an_error"
+            "PointerConstraints.*:-PointerConstraints.when_surface_is_reselected_persistent_confined_pointer_gets_notifications:PointerConstraints.when_surface_is_unselected_confined_pointer_gets_unconfined_notification:PointerConstraints.when_surface_is_reselected_persistent_locked_pointer_gets_notifications:PointerConstraints.when_surface_is_unselected_locked_pointer_gets_unlocked_notification"
+            "ForeignToplevelManagerTest.does_not_detect_toplevels_when_test_creates_none:ForeignToplevelManagerTest.detects_toplevel_from_same_client:ForeignToplevelManagerTest.detects_toplevel_from_different_client:ForeignToplevelManagerTest.detects_toplevel_created_after_manager:ForeignToplevelManagerTest.detects_multiple_toplevels_from_multiple_clients"
+            "Anchors/LayerSurfaceErrorsTest.specifying_zero_size_without_corresponding_anchors_is_an_error*:Anchor/LayerSurfaceLayoutTest.is_positioned_correctly_when_explicit_size_does_not_match_buffer_size*:Anchor/LayerSurfaceLayoutTest.is_positioned_correctly_when_layout_changed*:Anchor/LayerSurfaceLayoutTest.is_positioned_correctly_after_multiple_changes*:Anchor/LayerSurfaceLayoutTest.surfaces_with_exclusive_zone_set_to_negative_one_do_not_respect_other_exclusive_zones*"
+          )
+          for filter in "${filters[@]}"; do
+            echo "=== $filter"
+            nix develop -c just wlcs --gtest_filter="$filter"
+          done
