@@ -12,8 +12,8 @@ use crate::{
     cursor::CursorState,
     focus::{OutputFocusStack, WindowKeyboardFocusStack, pointer::PointerContents},
     handlers::{
-        session_lock::LockState, xdg_activation::XDG_ACTIVATION_TOKEN_TIMEOUT,
-        xwayland::XwaylandState,
+        image_copy_capture::CapturePrograms, session_lock::LockState,
+        xdg_activation::XDG_ACTIVATION_TOKEN_TIMEOUT, xwayland::XwaylandState,
     },
     layout::LayoutState,
     process::ProcessState,
@@ -32,7 +32,6 @@ use crate::{
 use smithay::{
     backend::renderer::{
         element::{RenderElementState, RenderElementStates, utils::select_dmabuf_feedback},
-        gles::GlesTexProgram,
     },
     desktop::{
         LayerSurface, PopupManager, Space, layer_map_for_output,
@@ -253,13 +252,13 @@ pub struct Pinnacle {
     pub capture_sessions: Vec<Session>,
     pub cursor_capture_sessions: Vec<CursorSession>,
 
-    /// The texture program the capture path composes HDR content with, and the
-    /// paper white it was compiled for.
+    /// The texture programs the capture path needs, and the paper white they were
+    /// compiled for.
     ///
     /// Programs belong to the renderer, which lives as long as the session, so
-    /// caching one here is safe and keeps a per-frame capture from linking a
+    /// caching them here is safe and keeps a per-frame capture from linking a
     /// shader for every frame it takes.
-    pub capture_hdr_program: Option<(f64, GlesTexProgram)>,
+    pub capture_hdr_programs: Option<CapturePrograms>,
 }
 
 #[cfg(feature = "snowcap")]
@@ -585,7 +584,7 @@ impl Pinnacle {
                 &display_handle,
             ),
             image_copy_capture_state: ImageCopyCaptureState::new::<State>(&display_handle),
-            capture_hdr_program: None,
+            capture_hdr_programs: None,
             content_type_state: ContentTypeState::new::<State>(&display_handle),
             color_management_state: ColorManagementState::new::<State, _>(
                 &display_handle,

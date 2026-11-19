@@ -2,14 +2,15 @@
 
 //! HDR output support.
 //!
-//! Two pieces live here: the GLSL shader that converts sRGB content into the
-//! BT.2020/PQ signal an HDR connector expects, and the CPU twin used for anything
-//! the shader does not touch (clear colour, solid-colour render elements, the
-//! cursor buffer).
+//! Two pieces live here: the GLSL shaders that convert between sRGB and the
+//! BT.2020/PQ signal an HDR connector expects, and their CPU twins, used for
+//! everything the shaders do not touch (clear colour, solid-colour render
+//! elements, capture readbacks).
 //!
-//! Both were checked against a float64 reference implementation of the same spec
-//! formulas; see the numeric oracle described in `STATE.md` at the repository of
-//! the experiment. The shader body here is the one that was verified.
+//! The unit tests below check the twins against a float64 reference
+//! implementation of the same spec formulas, and `tests/integration/hdr_shaders.rs`
+//! compiles the shaders on a real GLES renderer and checks that the GL inverse
+//! produces what its twin computes.
 
 use smithay::{
     backend::renderer::{Color32F, element::Id},
@@ -123,8 +124,8 @@ impl HdrConfig {
                 as u16;
         }
         if std::env::var_os("PINNACLE_HDR_DESC_MAX_FALL").is_none() && max_fall > 0.0 {
-            self.max_fall = (max_fall.round() as i64).clamp(MAX_FALL_MIN as i64, MAX_FALL_MAX as i64)
-                as u16;
+            self.max_fall =
+                (max_fall.round() as i64).clamp(MAX_FALL_MIN as i64, MAX_FALL_MAX as i64) as u16;
         }
         self.raise_peak_to_paper_white();
     }
@@ -333,10 +334,10 @@ pub fn texture_shader(ref_white: f64) -> String {
 /// frame back into sRGB.
 ///
 /// The exact inverse of [`HDR_TEXTURE_SHADER_TEMPLATE`]: PQ decode, BT.2020 to
-/// BT.709, divide by the paper white, sRGB encode. Used for screencopies, so a
-/// screenshot of an HDR desktop matches what the same desktop looks like at that
-/// paper white in SDR. Everything above the paper white clips; there is no tone
-/// mapping, because a screenshot has no headroom to map to.
+/// BT.709, divide by the paper white, sRGB encode. Both capture protocols use
+/// it, so the pixels a client receives match what the same content looks like at
+/// that paper white in SDR. Everything above the paper white clips; there is no
+/// tone mapping, because a capture has no headroom to map to.
 pub const PQ_TO_SRGB_TEXTURE_SHADER_TEMPLATE: &str = r#"#version 100
 
 //_DEFINES_
@@ -385,7 +386,12 @@ vec3 linear_to_srgb(vec3 c) {
 }
 
 void main() {
-    vec3 pq = texture2D(tex, v_coords).rgb;
+    vec4 color = texture2D(tex, v_coords);
+
+    // The composed frame is premultiplied and PQ is nonlinear, so unpremultiply
+    // before decoding and premultiply the sRGB result afterwards. This is the
+    // same order [`pq_bgra_to_srgb_in_place`] uses for the CPU path.
+    vec3 pq = color.rgb / max(color.a, 1.0 / 255.0);
 
     // PQ carries absolute luminance: decode to nits, then express it relative to
     // the paper white the compositor encoded sRGB 1.0 at.
@@ -394,7 +400,7 @@ void main() {
     vec3 lin709 = BT2020_TO_BT709 * lin2020;
     vec3 srgb = linear_to_srgb(clamp(lin709, 0.0, 1.0));
 
-    gl_FragColor = vec4(srgb * alpha, alpha);
+    gl_FragColor = vec4(srgb * color.a, color.a) * alpha;
 }
 "#;
 

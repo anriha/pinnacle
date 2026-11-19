@@ -5,11 +5,11 @@ use smithay::{
         allocator::{Fourcc as DrmFourcc, Modifier as DrmModifier},
         egl::EGLDevice,
         renderer::{
-            Bind, Color32F, ExportMem, Frame as RendererFrame, ImportMem, Offscreen, Renderer,
+            Bind, Color32F, ExportMem, Frame as RendererFrame, Offscreen, Renderer,
             buffer_dimensions,
             damage::OutputDamageTracker,
             element::RenderElement,
-            gles::{GlesRenderbuffer, GlesRenderer, GlesTarget, GlesTexProgram},
+            gles::{GlesRenderbuffer, GlesRenderer, GlesTarget, GlesTexProgram, GlesTexture},
         },
     },
     output::Output,
@@ -614,7 +614,7 @@ impl State {
                 &client_damage,
                 trackers,
                 hdr.as_ref(),
-                &mut self.pinnacle.capture_hdr_program,
+                &mut self.pinnacle.capture_hdr_programs,
             )
         });
 
@@ -698,7 +698,7 @@ fn render_capture(
     client_damage: &[BufferDamageElement],
     trackers: &mut SessionDamageTrackers,
     hdr: Option<&CaptureHdr>,
-    program_cache: &mut Option<(f64, GlesTexProgram)>,
+    program_cache: &mut Option<CapturePrograms>,
 ) -> anyhow::Result<()> {
     let mut dmabuf;
     let mut renderbuffer: GlesRenderbuffer;
@@ -772,28 +772,32 @@ fn render_hdr_capture(
     elements: &[DynElement<GlesRenderer>],
     damage_tracker: &mut OutputDamageTracker,
     hdr: &CaptureHdr,
-    program_cache: &mut Option<(f64, GlesTexProgram)>,
+    program_cache: &mut Option<CapturePrograms>,
 ) -> anyhow::Result<()> {
-    let program = capture_program(renderer, hdr.reference_white, program_cache)?;
+    let (forward, inverse) = capture_programs(renderer, hdr.reference_white, program_cache)?;
     let reference_white = hdr.reference_white;
 
-    let mut offscreen: GlesRenderbuffer =
-        renderer.create_buffer(DrmFourcc::Abgr8888, buffer_size)?;
-    let mut offscreen_fb = renderer.bind(&mut offscreen)?;
+    // The composed frame is a texture and not a renderbuffer: the dmabuf path
+    // samples it through the inverse program, which is what keeps a full-rate
+    // capture from reading every frame back into CPU memory.
+    let mut offscreen: GlesTexture = renderer.create_buffer(DrmFourcc::Abgr8888, buffer_size)?;
 
-    renderer.set_default_tex_program_override(Some((program, Vec::new())));
+    renderer.set_default_tex_program_override(Some((forward, Vec::new())));
     renderer.set_solid_color_transform(Some(Box::new(move |color| {
         crate::hdr::premultiplied_srgb_to_pq(color, reference_white)
     })));
     renderer.set_already_encoded_elements(hdr.already_encoded.clone());
 
-    let rendered = damage_tracker.render_output(
-        renderer,
-        &mut offscreen_fb,
-        1,
-        elements,
-        Color32F::TRANSPARENT,
-    );
+    let rendered = {
+        let mut offscreen_fb = renderer.bind(&mut offscreen)?;
+        damage_tracker.render_output(
+            renderer,
+            &mut offscreen_fb,
+            1,
+            elements,
+            Color32F::TRANSPARENT,
+        )
+    };
 
     // The hooks are renderer state, so they are cleared even when the render
     // failed: a leaked override would convert the next frame of every output.
@@ -803,39 +807,49 @@ fn render_hdr_capture(
 
     let rendered = rendered?;
 
-    let mapping = renderer.copy_framebuffer(
-        &offscreen_fb,
-        Rectangle::<i32, Buffer>::from_size(buffer_size),
-        DrmFourcc::Argb8888,
-    )?;
-    let mut bytes = renderer.map_texture(&mapping)?.to_vec();
-    crate::hdr::pq_bgra_to_srgb_in_place(&mut bytes, reference_white);
+    let size: Size<i32, Physical> = (buffer_size.w, buffer_size.h).into();
+    let full = Rectangle::<i32, Physical>::from_size(size);
+    // `None` means the tracker has no damage to report, which is only safe to read
+    // as "everything changed": a stale region would keep PQ colour codes.
+    let damage = rendered.damage.cloned().unwrap_or_else(|| vec![full]);
 
     if is_shm {
-        for rect in rendered.damage.into_iter().flatten() {
-            blit_rect(&bytes, buffer_size, *rect, buffer)?;
+        // A shm capture is client memory, so it has to be read back either way.
+        // The CPU conversion is the exact twin of the inverse program below.
+        let mut bytes = {
+            let offscreen_fb = renderer.bind(&mut offscreen)?;
+            let mapping = renderer.copy_framebuffer(
+                &offscreen_fb,
+                Rectangle::<i32, Buffer>::from_size(buffer_size),
+                DrmFourcc::Argb8888,
+            )?;
+            renderer.map_texture(&mapping)?.to_vec()
+        };
+        crate::hdr::pq_bgra_to_srgb_in_place(&mut bytes, reference_white);
+
+        for rect in damage {
+            blit_rect(&bytes, buffer_size, rect, buffer)?;
         }
         return Ok(());
     }
 
-    // A dmabuf capture has no CPU mapping to write, and the capture path has no
-    // renderer that can sample its own offscreen as a `DynElement`, so the
-    // converted pixels go back to the GPU as a texture and are drawn 1:1.
-    let texture = renderer.import_memory(&bytes, DrmFourcc::Argb8888, buffer_size, false)?;
-    let size: Size<i32, Physical> = (buffer_size.w, buffer_size.h).into();
-    let full = Rectangle::<i32, Physical>::from_size(size);
-
+    // A dmabuf has no CPU mapping to write: the composed frame is drawn into the
+    // client's buffer through the inverse program, so the conversion happens in
+    // the GPU and only the damaged region is touched.
     let mut gl_frame = renderer.render(framebuffer, size, Transform::Normal)?;
-    gl_frame.clear(Color32F::TRANSPARENT, &[full])?;
+    // The client's buffer holds whatever it held before, and the drawing below
+    // blends, so the region being written starts transparent - the same state
+    // `render_output` leaves the SDR path in.
+    gl_frame.clear(Color32F::TRANSPARENT, &damage)?;
     gl_frame.render_texture_from_to(
-        &texture,
+        &offscreen,
         Rectangle::<f64, Buffer>::from_size(buffer_size.to_f64()),
         full,
-        &[full],
+        &damage,
         &[],
         Transform::Normal,
         1.0,
-        None,
+        Some(&inverse),
         &[],
     )?;
     let _sync = gl_frame.finish()?;
@@ -860,22 +874,42 @@ fn blit_rect(
     )
 }
 
-/// The sRGB-to-PQ program for this paper white, compiled once per value.
-fn capture_program(
+/// The programs the HDR capture path needs for one paper white.
+pub struct CapturePrograms {
+    reference_white: f64,
+    /// sRGB to BT.2020/PQ, for the SDR elements of the composition.
+    forward: GlesTexProgram,
+    /// BT.2020/PQ back to sRGB, for handing the composed frame to a client.
+    inverse: GlesTexProgram,
+}
+
+/// The capture programs for this paper white, compiled once per value.
+fn capture_programs(
     renderer: &mut GlesRenderer,
     reference_white: f64,
-    cache: &mut Option<(f64, GlesTexProgram)>,
-) -> anyhow::Result<GlesTexProgram> {
-    if let Some((compiled_for, program)) = cache.as_ref()
-        && *compiled_for == reference_white
+    cache: &mut Option<CapturePrograms>,
+) -> anyhow::Result<(GlesTexProgram, GlesTexProgram)> {
+    if let Some(programs) = cache.as_ref()
+        && programs.reference_white == reference_white
     {
-        return Ok(program.clone());
+        return Ok((programs.forward.clone(), programs.inverse.clone()));
     }
 
-    let program =
+    // Both are compiled together: a capture needs the forward one to compose and
+    // the inverse one to hand the frame over, and a paper white the cache already
+    // holds answers both.
+    let forward =
         renderer.compile_custom_texture_shader(crate::hdr::texture_shader(reference_white), &[])?;
-    *cache = Some((reference_white, program.clone()));
-    Ok(program)
+    let inverse = renderer
+        .compile_custom_texture_shader(crate::hdr::inverse_texture_shader(reference_white), &[])?;
+
+    *cache = Some(CapturePrograms {
+        reference_white,
+        forward: forward.clone(),
+        inverse: inverse.clone(),
+    });
+
+    Ok((forward, inverse))
 }
 
 impl Pinnacle {
