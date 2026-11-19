@@ -1577,6 +1577,59 @@ impl Udev {
 
         let scale = output.current_scale().fractional_scale();
 
+        // The shader bakes in the paper white, so it is compiled per configuration
+        // and only here: the renderer exists inside a frame, and a failure has to
+        // be dealt with before anything below reads the HDR state. Doing it first
+        // means the frame that discovers the failure is already rendered and
+        // signalled as SDR, instead of the cursor being placed for a passthrough
+        // frame that no longer happens.
+        if surface.hdr.enabled && surface.hdr_program.is_none() {
+            match renderer
+                .as_gles_renderer()
+                .compile_custom_texture_shader(surface.hdr.shader(), &[])
+            {
+                Ok(program) => surface.hdr_program = Some(program),
+                Err(err) => {
+                    // Nothing can be composited without the program, so the whole
+                    // output goes back to SDR: the connector stops signalling PQ,
+                    // the output's state says SDR, and every client is told to send
+                    // sRGB again. Leaving `state.hdr` at PQ while the panel gets
+                    // sRGB is what would turn a shader failure into a washed-out
+                    // desktop that the config client cannot even see.
+                    warn!(
+                        "Failed to compile the HDR shader on {} ({err}), falling back to SDR",
+                        output.name()
+                    );
+                    surface.hdr.enabled = false;
+                    surface.hdr_gate = None;
+                    surface.hdr_encoded_signature = None;
+                    surface.hdr_scanout = None;
+
+                    let color_state = ConnectorColorState {
+                        colorspace: Colorspace::Default,
+                        hdr_metadata: None,
+                        max_bpc: None,
+                    };
+                    if let Err(err) = surface
+                        .drm_output
+                        .with_compositor(|compositor| compositor.use_color_state(color_state))
+                    {
+                        warn!(
+                            "Failed to return {} to SDR signalling: {err}",
+                            output.name()
+                        );
+                    }
+
+                    let applied = surface.hdr;
+                    output.with_state_mut(|state| state.hdr = applied);
+                    pinnacle.update_preferred_descriptions(output);
+                    pinnacle
+                        .color_management_state
+                        .output_description_changed(output);
+                }
+            }
+        }
+
         // Whether a fullscreen HDR window is on this output. On its own that says
         // nothing about scanout: a frame only goes out untouched when nothing has
         // to be drawn on top of that window either, which is decided below once
@@ -1772,33 +1825,22 @@ impl Udev {
         }
 
         if surface.hdr.enabled {
+            // The program was compiled at the top of this function; a failure
+            // there has already put the output back into SDR.
+            let ref_white = surface.hdr.reference_white;
+            let program = surface.hdr_program.clone();
             let gles = renderer.as_gles_renderer();
-            if surface.hdr_program.is_none() {
-                match gles.compile_custom_texture_shader(
-                    surface.hdr.shader(),
-                    &[],
-                ) {
-                    Ok(program) => surface.hdr_program = Some(program),
-                    Err(err) => {
-                        warn!("Failed to compile the HDR shader, falling back to SDR: {err}");
-                        surface.hdr.enabled = false;
-                    }
-                }
+            if let Some(program) = program
+                && !hdr_passthrough_frame
+            {
+                gles.set_default_tex_program_override(Some((program, Vec::new())));
             }
-
-            if let Some(program) = surface.hdr_program.clone() {
-                let ref_white = surface.hdr.reference_white;
-                let gles = renderer.as_gles_renderer();
-                if !hdr_passthrough_frame {
-                    gles.set_default_tex_program_override(Some((program, Vec::new())));
-                }
-                // Covers `Frame::clear` and solid elements. The clear colour is handed
-                // over unconverted on purpose: Smithay applies the transform to it, so
-                // converting it here as well would encode it twice.
-                gles.set_solid_color_transform(Some(Box::new(move |color| {
-                    crate::hdr::premultiplied_srgb_to_pq(color, ref_white)
-                })));
-            }
+            // Covers `Frame::clear` and solid elements. The clear colour is handed
+            // over unconverted on purpose: Smithay applies the transform to it, so
+            // converting it here as well would encode it twice.
+            gles.set_solid_color_transform(Some(Box::new(move |color| {
+                crate::hdr::premultiplied_srgb_to_pq(color, ref_white)
+            })));
         }
 
         // No overlay planes cuz they wonk
