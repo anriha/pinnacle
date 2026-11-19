@@ -1097,3 +1097,26 @@ fn output_handle_focus() {
 // TODO: connect_signal
 // TODO: keyboard_focus_stack
 // TODO: keyboard_focus_stack_visible
+
+#[test_log::test]
+fn output_set_hdr_is_refused_where_nothing_can_signal_it() {
+    let (mut fixture, output1, _) = set_up();
+
+    let output1_name = output1.name();
+    fixture.spawn_blocking(move || {
+        let output = pinnacle_api::output::get_by_name(&output1_name).unwrap();
+        assert!(!output.hdr().supported);
+
+        // The testing backend has no connector, exactly like the winit one; the
+        // request is refused and logged instead of being silently accepted.
+        output.set_hdr(pinnacle_api::output::Hdr::On);
+
+        let hdr = output.hdr();
+        assert!(!hdr.enabled);
+        assert!(!hdr.supported);
+    });
+
+    // The compositor's own state has to agree, or clients would be told to commit
+    // PQ into an output that is not signalling it.
+    assert!(!output1.with_state(|state| state.hdr.enabled));
+}

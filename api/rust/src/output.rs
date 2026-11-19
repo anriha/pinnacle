@@ -677,22 +677,23 @@ impl OutputHandle {
     /// The paper white and peak luminance keep their current values; use
     /// [`set_hdr_reference_white`](Self::set_hdr_reference_white) and
     /// [`set_hdr_max_luminance`](Self::set_hdr_max_luminance) to change them.
+    ///
+    /// An output whose backend cannot signal HDR refuses the request and logs it;
+    /// [`hdr`](Self::hdr) reports [`supported`](HdrInfo::supported) so you can
+    /// check first.
     pub fn set_hdr(&self, hdr: Hdr) {
         let hdr = match hdr {
             Hdr::Off => output::v1::Hdr::Off,
             Hdr::On => output::v1::Hdr::On,
         };
 
-        Client::output()
-            .set_hdr(SetHdrRequest {
-                output_name: self.name(),
-                hdr: hdr as i32,
-                reference_white_nits: None,
-                max_luminance_nits: None,
-                max_fall_nits: None,
-            })
-            .block_on_tokio()
-            .unwrap();
+        self.send_hdr(SetHdrRequest {
+            output_name: self.name(),
+            hdr: hdr as i32,
+            reference_white_nits: None,
+            max_luminance_nits: None,
+            max_fall_nits: None,
+        });
     }
 
     /// Sets the luminance SDR content is mapped to when this output is in HDR
@@ -701,16 +702,13 @@ impl OutputHandle {
     /// 203 is BT.2408's reference white. Raise it if HDR-mode SDR content looks
     /// dimmer than the same content in SDR mode.
     pub fn set_hdr_reference_white(&self, nits: u32) {
-        Client::output()
-            .set_hdr(SetHdrRequest {
-                output_name: self.name(),
-                hdr: output::v1::Hdr::Unspecified as i32,
-                reference_white_nits: Some(nits),
-                max_luminance_nits: None,
-                max_fall_nits: None,
-            })
-            .block_on_tokio()
-            .unwrap();
+        self.send_hdr(SetHdrRequest {
+            output_name: self.name(),
+            hdr: output::v1::Hdr::Unspecified as i32,
+            reference_white_nits: Some(nits),
+            max_luminance_nits: None,
+            max_fall_nits: None,
+        });
     }
 
     /// Sets the peak luminance advertised to this output's connector, in nits.
@@ -718,16 +716,24 @@ impl OutputHandle {
     /// Use this when the EDID-reported peak is wrong for the panel's current
     /// picture mode.
     pub fn set_hdr_max_luminance(&self, nits: u32) {
-        Client::output()
-            .set_hdr(SetHdrRequest {
-                output_name: self.name(),
-                hdr: output::v1::Hdr::Unspecified as i32,
-                reference_white_nits: None,
-                max_luminance_nits: Some(nits),
-                max_fall_nits: None,
-            })
-            .block_on_tokio()
-            .unwrap();
+        self.send_hdr(SetHdrRequest {
+            output_name: self.name(),
+            hdr: output::v1::Hdr::Unspecified as i32,
+            reference_white_nits: None,
+            max_luminance_nits: Some(nits),
+            max_fall_nits: None,
+        });
+    }
+
+    /// Sends an HDR request, reporting a refusal instead of panicking.
+    ///
+    /// Turning HDR on can be refused - the winit backend has no connector to
+    /// describe - and a config asking for it on the wrong output should get a log
+    /// line, not a panic that takes the whole config down with it.
+    fn send_hdr(&self, request: SetHdrRequest) {
+        if let Err(err) = Client::output().set_hdr(request).block_on_tokio() {
+            tracing::warn!("Could not set HDR on {}: {err}", self.name());
+        }
     }
 
     /// Gets this output's HDR configuration.

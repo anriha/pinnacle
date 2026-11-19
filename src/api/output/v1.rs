@@ -389,8 +389,15 @@ impl output::v1::output_service_server::OutputService for super::OutputService {
                 );
             }
 
+            // The output has already been put back into SDR by `set_output_hdr`,
+            // so the request failed without leaving anything half-applied; say so
+            // instead of pretending it worked.
             if let Err(err) = state.set_output_hdr(&output, config) {
                 warn!("Failed to set HDR on output {}: {err}", output.name());
+                return Err(Status::failed_precondition(format!(
+                    "cannot set HDR on output {}: {err}",
+                    output.name()
+                )));
             }
 
             Ok(SetHdrResponse {})

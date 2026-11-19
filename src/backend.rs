@@ -108,10 +108,18 @@ impl Backend {
         config: crate::hdr::HdrConfig,
     ) -> Result<(), String> {
         match self {
-            Backend::Winit(_) => Ok(()),
+            // Neither the window backend nor the testing one has a connector to
+            // describe: the window's swapchain is 8-bit sRGB, and handing it PQ
+            // would only make the window system decode it as sRGB again. Enabling
+            // is refused for that reason; turning it off is already the state
+            // those outputs are in.
+            Backend::Winit(_) if !config.enabled => Ok(()),
+            Backend::Winit(_) => Err("the winit backend cannot signal HDR".into()),
             Backend::Udev(udev) => udev.set_output_hdr(output, config),
             #[cfg(feature = "testing")]
-            Backend::Dummy(_) => Ok(()),
+            Backend::Dummy(_) if !config.enabled => Ok(()),
+            #[cfg(feature = "testing")]
+            Backend::Dummy(_) => Err("the testing backend cannot signal HDR".into()),
         }
     }
 
