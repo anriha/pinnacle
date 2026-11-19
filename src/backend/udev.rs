@@ -1664,96 +1664,38 @@ impl Udev {
         // makes a windowed or tiled HDR client look right: without this the whole
         // frame is one encoding and an HDR client inside it gets encoded twice.
         //
-        // The description is looked up per surface, not per window. Clients attach it
-        // to the surface they render into, which is not always the window's own
-        // surface: Wine puts it on the swapchain's surface, so a game negotiated as
-        // PQ reported nothing at the toplevel and was converted as if it were SDR.
-        // A surface without a description inherits the nearest ancestor's.
-        //
-        // The traversal below only clones proxies. That is deliberate: it holds the
-        // user-data mutex of every surface in the subtree, so a `with_states`,
-        // `get_parent` or `get_surface_description` call inside it takes the same
-        // mutex again and deadlocks the compositor with the display frozen mid-frame.
-        // The first version of this code did that and hung the machine. All the
-        // description lookups happen after the traversal has returned.
-        let already_encoded: Vec<smithay::backend::renderer::element::Id> = if surface.hdr.enabled {
-            let mut ids = Vec::new();
-            let mut marked = Vec::new();
-            let mut rejected = Vec::new();
-            let mut undescribed = Vec::new();
-            let mut tree = Vec::new();
-            for window in pinnacle.space.elements_for_output(output) {
-                let class = window.class().unwrap_or_else(|| "?".to_string());
-                let Some(toplevel) = window.toplevel() else {
-                    if surface.hdr_log {
-                        undescribed.push(format!("{class}:x11"));
-                    }
-                    continue;
-                };
-                let root = toplevel.wl_surface().clone();
-                tree.clear();
-                smithay::wayland::compositor::with_surface_tree_downward(
-                    &root,
-                    (),
-                    |_, _, _| smithay::wayland::compositor::TraversalAction::DoChildren(()),
-                    |tree_surface, _, _| tree.push(tree_surface.clone()),
-                    |_, _, _| true,
-                );
-                for tree_surface in &tree {
-                    let Some(description) = crate::hdr::surface_description_in_tree(tree_surface)
-                    else {
-                        if surface.hdr_log {
-                            let id =
-                                smithay::reexports::wayland_server::Resource::id(tree_surface)
-                                    .protocol_id();
-                            undescribed.push(format!("{id}:{class}:none"));
-                        }
-                        continue;
-                    };
-                    if !crate::hdr::description_matches_output_encoding(&description) {
-                        if surface.hdr_log {
-                            let id =
-                                smithay::reexports::wayland_server::Resource::id(tree_surface)
-                                    .protocol_id();
-                            rejected.push(format!(
-                                "{id}:{class}:{}",
-                                crate::hdr::description_tag(&description)
-                            ));
-                        }
-                        continue;
-                    }
-                    if surface.hdr_log {
-                        let id = smithay::reexports::wayland_server::Resource::id(tree_surface)
-                            .protocol_id();
-                        marked.push(format!("{id}:{class}"));
-                    }
-                    ids.push(smithay::backend::renderer::element::Id::from_wayland_resource(
-                        tree_surface,
-                    ));
-                }
-            }
-            if surface.hdr_log {
-                let signature = format!(
-                    "{}|{}|{}",
-                    marked.join(","),
-                    rejected.join(","),
-                    undescribed.join(",")
-                );
-                if surface.hdr_encoded_signature.as_deref() != Some(&signature) {
-                    info!(
-                        "{}: already encoded [{}] other descriptions [{}] no description [{}]",
-                        output.name(),
-                        marked.join(","),
-                        rejected.join(","),
-                        undescribed.join(","),
-                    );
-                    surface.hdr_encoded_signature = Some(signature);
-                }
-            }
-            ids
+        // `EncodedSurfaces` looks the description up per surface, not per window,
+        // and inherits it from the nearest ancestor, which is what catches Wine's
+        // swapchain surface. Membership is needed before rendering, because the
+        // passthrough decision below asks whether the top element is one of these.
+        let encoded_surfaces = if surface.hdr.enabled {
+            Some(crate::hdr::EncodedSurfaces::for_windows(
+                pinnacle.space.elements_for_output(output),
+            ))
         } else {
-            Vec::new()
+            None
         };
+        let already_encoded = encoded_surfaces
+            .as_ref()
+            .map(|encoded| encoded.ids.clone())
+            .unwrap_or_default();
+
+        if surface.hdr_log
+            && let Some(encoded) = &encoded_surfaces
+        {
+            let signature = encoded.signature();
+            if surface.hdr_encoded_signature.as_deref() != Some(&signature) {
+                info!(
+                    "{}: already encoded [{}] other descriptions [{}] no description [{}]",
+                    output.name(),
+                    encoded.marked.join(","),
+                    encoded.rejected.join(","),
+                    encoded.undescribed.join(","),
+                );
+                surface.hdr_encoded_signature = Some(signature);
+            }
+        }
+
         // A frame whose topmost element is the HDR client's own buffer covering
         // the whole output is already in the output's encoding, so a copy is the
         // correct conversion and running the SDR shader over it would encode it

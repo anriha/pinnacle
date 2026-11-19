@@ -12,13 +12,19 @@
 //! the experiment. The shader body here is the one that was verified.
 
 use smithay::{
-    backend::renderer::Color32F,
+    backend::renderer::{Color32F, element::Id},
     output::Output,
-    wayland::color::management::{
-        Chromaticities, ImageDescription, Primaries, PrimariesOption, TransferFunction,
+    reexports::wayland_server::Resource,
+    wayland::{
+        color::management::{
+            Chromaticities, ImageDescription, Primaries, PrimariesOption, TransferFunction,
+        },
+        compositor::{TraversalAction, with_surface_tree_downward},
     },
 };
 use std::path::PathBuf;
+
+use crate::window::WindowElement;
 
 /// BT.2408 HDR reference white (nits): the luminance 1.0 sRGB is mapped to.
 ///
@@ -362,21 +368,34 @@ pub fn pq_to_srgb(pq: [f64; 3], ref_white: f64) -> [f64; 3] {
 
 /// Converts premultiplied BGRA pixels from BT.2020/PQ to sRGB in place.
 ///
-/// This is what a screencopy of an HDR output goes through: the composed frame is
-/// PQ, a capture client expects sRGB. `bytes` are in the layout
-/// `copy_framebuffer` produces for `Abgr8888`, which is what the wlr-screencopy
-/// clients get, so the channel order in memory is B, G, R, A.
+/// This is what a capture of an HDR output goes through: the composed frame is
+/// PQ, and neither wlr-screencopy nor image-copy-capture carries a colour
+/// description, so the client gets sRGB. `bytes` are in the layout
+/// `copy_framebuffer` produces for `Argb8888`, so the channel order in memory is
+/// B, G, R, A.
+///
+/// The frame is premultiplied in the PQ domain (that is how the forward shader
+/// writes it), so the colour is straightened before decoding and premultiplied
+/// again afterwards. Without that a translucent window or a rounded corner would
+/// composite darker than the same content does on screen.
 pub fn pq_bgra_to_srgb_in_place(bytes: &mut [u8], ref_white: f64) {
     for px in bytes.chunks_exact_mut(4) {
+        let alpha = px[3] as f64 / 255.0;
+        if alpha <= 0.0 {
+            px[0] = 0;
+            px[1] = 0;
+            px[2] = 0;
+            continue;
+        }
         let pq = [
-            px[2] as f64 / 255.0,
-            px[1] as f64 / 255.0,
-            px[0] as f64 / 255.0,
+            px[2] as f64 / 255.0 / alpha,
+            px[1] as f64 / 255.0 / alpha,
+            px[0] as f64 / 255.0 / alpha,
         ];
         let srgb = pq_to_srgb(pq, ref_white);
-        px[2] = (srgb[0] * 255.0).round().clamp(0.0, 255.0) as u8;
-        px[1] = (srgb[1] * 255.0).round().clamp(0.0, 255.0) as u8;
-        px[0] = (srgb[2] * 255.0).round().clamp(0.0, 255.0) as u8;
+        px[2] = (srgb[0] * alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+        px[1] = (srgb[1] * alpha * 255.0).round().clamp(0.0, 255.0) as u8;
+        px[0] = (srgb[2] * alpha * 255.0).round().clamp(0.0, 255.0) as u8;
     }
 }
 
@@ -684,6 +703,81 @@ pub fn surface_description_in_tree(
     None
 }
 
+/// The surfaces of these windows whose committed description is already in the
+/// output's BT.2020/PQ encoding, grouped the way the HDR log prints them.
+///
+/// The description is looked up per surface, not per window: clients attach it to
+/// the surface they render into, which is not always the window's own surface
+/// (Wine puts it on the swapchain's surface), and a surface without one inherits
+/// the nearest ancestor's.
+///
+/// **Never build this from inside a surface-tree traversal.** The traversal holds
+/// the user-data mutex of every surface in the subtree and this takes it again per
+/// surface, which deadlocks the compositor with the display frozen mid-frame.
+#[derive(Default)]
+pub struct EncodedSurfaces {
+    /// Element ids for `GlesRenderer::set_already_encoded_elements`.
+    pub ids: Vec<Id>,
+    /// `id:class` of every surface that is already encoded.
+    pub marked: Vec<String>,
+    /// `id:class:description` of every surface that declares something else.
+    pub rejected: Vec<String>,
+    /// `class` or `id:class` of every surface that declares nothing.
+    pub undescribed: Vec<String>,
+}
+
+impl EncodedSurfaces {
+    /// Collects the native-encoding surfaces of `windows`.
+    pub fn for_windows<'a>(windows: impl IntoIterator<Item = &'a WindowElement>) -> Self {
+        let mut encoded = Self::default();
+        let mut tree = Vec::new();
+        for window in windows {
+            let class = window.class().unwrap_or_else(|| "?".to_string());
+            let Some(toplevel) = window.toplevel() else {
+                encoded.undescribed.push(format!("{class}:x11"));
+                continue;
+            };
+
+            let root = toplevel.wl_surface().clone();
+            tree.clear();
+            with_surface_tree_downward(
+                &root,
+                (),
+                |_, _, _| TraversalAction::DoChildren(()),
+                |surface, _, _| tree.push(surface.clone()),
+                |_, _, _| true,
+            );
+
+            for surface in &tree {
+                let id = Resource::id(surface).protocol_id();
+                let Some(description) = surface_description_in_tree(surface) else {
+                    encoded.undescribed.push(format!("{id}:{class}:none"));
+                    continue;
+                };
+                if !description_matches_output_encoding(&description) {
+                    encoded
+                        .rejected
+                        .push(format!("{id}:{class}:{}", description_tag(&description)));
+                    continue;
+                }
+                encoded.marked.push(format!("{id}:{class}"));
+                encoded.ids.push(Id::from_wayland_resource(surface));
+            }
+        }
+        encoded
+    }
+
+    /// A signature of the three groups, so a repeat of the same set prints nothing.
+    pub fn signature(&self) -> String {
+        format!(
+            "{}|{}|{}",
+            self.marked.join(","),
+            self.rejected.join(","),
+            self.undescribed.join(",")
+        )
+    }
+}
+
 /// Whether HDR output was requested for this output by the environment.
 ///
 /// `PINNACLE_HDR` unset or empty disables HDR. `PINNACLE_HDR=1` enables every
@@ -755,6 +849,40 @@ mod tests {
                 "got {got}, want {want}"
             );
         }
+    }
+
+    #[test]
+    fn bgra_conversion_keeps_translucent_edges_consistent() {
+        // A capture of a translucent window has to composite the way the window
+        // does: premultiplied in, premultiplied out.
+        let ref_white = DEFAULT_REF_WHITE;
+        let srgb = [0.8, 0.25, 0.5];
+        let alpha = 0.5;
+        let pq = srgb_to_pq(srgb, ref_white);
+        let mut bytes = [
+            (pq[2] * alpha * 255.0).round() as u8,
+            (pq[1] * alpha * 255.0).round() as u8,
+            (pq[0] * alpha * 255.0).round() as u8,
+            (alpha * 255.0).round() as u8,
+        ];
+        pq_bgra_to_srgb_in_place(&mut bytes, ref_white);
+        let got = [
+            bytes[2] as f64 / 255.0 / alpha,
+            bytes[1] as f64 / 255.0 / alpha,
+            bytes[0] as f64 / 255.0 / alpha,
+        ];
+        for (got, want) in got.iter().zip(srgb) {
+            assert!(
+                (got - want).abs() < 2e-2,
+                "premultiplied round trip: got {got}, want {want}"
+            );
+        }
+
+        // Fully transparent pixels stay fully transparent and black, rather than
+        // turning into whatever the division by a zero alpha would produce.
+        let mut transparent = [3u8, 7, 11, 0];
+        pq_bgra_to_srgb_in_place(&mut transparent, ref_white);
+        assert_eq!(transparent, [0, 0, 0, 0]);
     }
 
     #[test]

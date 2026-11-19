@@ -30,11 +30,9 @@ use crate::{
     window::{Unmapped, WindowElement, ZIndexElement, rules::WindowRuleState},
 };
 use smithay::{
-    wayland::color::management::{
-        ColorManagementState, Feature, Primaries, RenderIntent, TransferFunction,
-    },
-    backend::renderer::element::{
-        RenderElementState, RenderElementStates, utils::select_dmabuf_feedback,
+    backend::renderer::{
+        element::{RenderElementState, RenderElementStates, utils::select_dmabuf_feedback},
+        gles::GlesTexProgram,
     },
     desktop::{
         LayerSurface, PopupManager, Space, layer_map_for_output,
@@ -60,6 +58,9 @@ use smithay::{
         },
     },
     utils::{Clock, HookId, Monotonic},
+    wayland::color::management::{
+        ColorManagementState, Feature, Primaries, RenderIntent, TransferFunction,
+    },
     wayland::{
         compositor::{
             self, CompositorClientState, CompositorHandler, CompositorState, SurfaceData,
@@ -251,6 +252,14 @@ pub struct Pinnacle {
 
     pub capture_sessions: Vec<Session>,
     pub cursor_capture_sessions: Vec<CursorSession>,
+
+    /// The texture program the capture path composes HDR content with, and the
+    /// paper white it was compiled for.
+    ///
+    /// Programs belong to the renderer, which lives as long as the session, so
+    /// caching one here is safe and keeps a per-frame capture from linking a
+    /// shader for every frame it takes.
+    pub capture_hdr_program: Option<(f64, GlesTexProgram)>,
 }
 
 #[cfg(feature = "snowcap")]
@@ -576,6 +585,7 @@ impl Pinnacle {
                 &display_handle,
             ),
             image_copy_capture_state: ImageCopyCaptureState::new::<State>(&display_handle),
+            capture_hdr_program: None,
             content_type_state: ContentTypeState::new::<State>(&display_handle),
             color_management_state: ColorManagementState::new::<State, _>(
                 &display_handle,

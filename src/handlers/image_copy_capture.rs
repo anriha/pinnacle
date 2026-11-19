@@ -5,14 +5,15 @@ use smithay::{
         allocator::{Fourcc as DrmFourcc, Modifier as DrmModifier},
         egl::EGLDevice,
         renderer::{
-            Bind, Color32F, ExportMem, Offscreen, buffer_dimensions,
+            Bind, Color32F, ExportMem, Frame as RendererFrame, ImportMem, Offscreen, Renderer,
+            buffer_dimensions,
             damage::OutputDamageTracker,
             element::RenderElement,
-            gles::{GlesRenderbuffer, GlesRenderer},
+            gles::{GlesRenderbuffer, GlesRenderer, GlesTarget, GlesTexProgram},
         },
     },
     output::Output,
-    reexports::wayland_server::protocol::wl_shm,
+    reexports::wayland_server::protocol::{wl_buffer::WlBuffer, wl_shm},
     utils::{Buffer, Physical, Point, Rectangle, Size, Transform},
     wayland::{
         compositor,
@@ -197,7 +198,7 @@ impl State {
             return;
         }
 
-        let elements = match session
+        let elements_and_hdr = match session
             .source()
             .user_data()
             .get::<ImageCaptureSourceKind>()
@@ -257,7 +258,7 @@ impl State {
                         .unwrap()
                 };
 
-                elements
+                (elements, self.capture_hdr_for_output(&output))
             }
             ImageCaptureSourceKind::Toplevel(foreign_toplevel) => {
                 let Some(foreign_toplevel) = foreign_toplevel.upgrade() else {
@@ -337,11 +338,12 @@ impl State {
                         .unwrap()
                 };
 
-                elements
+                (elements, self.capture_hdr_for_window(&win))
             }
         };
+        let (elements, hdr) = elements_and_hdr;
 
-        if let Err(frame) = self.handle_frame(frame, &elements, &mut trackers) {
+        if let Err(frame) = self.handle_frame(frame, &elements, &mut trackers, hdr) {
             *maybe_frame.borrow_mut() = Some(frame);
         }
     }
@@ -405,7 +407,7 @@ impl State {
             })
             .unwrap();
 
-        if let Err(frame) = self.handle_frame(frame, &elements, &mut trackers) {
+        if let Err(frame) = self.handle_frame(frame, &elements, &mut trackers, None) {
             *maybe_frame.borrow_mut() = Some(frame);
         }
     }
@@ -573,11 +575,12 @@ impl State {
         frame: Frame,
         elements: &[impl RenderElement<GlesRenderer>],
         trackers: &mut SessionDamageTrackers,
+        hdr: Option<CaptureHdr>,
     ) -> Result<(), Frame> {
         let _span = tracy_client::span!();
 
         let (damage, _) = trackers.damage.damage_output(1, elements).unwrap();
-        let damage = damage.map(|damage| damage.as_slice()).unwrap_or_default();
+        let damage = damage.cloned().unwrap_or_default();
         if damage.is_empty() {
             return Err(frame);
         }
@@ -591,83 +594,277 @@ impl State {
             .map(BufferDamageElement::new)
             .collect::<Vec<_>>();
 
-        self.backend.with_renderer(|renderer| {
-            let mut dmabuf;
-            let mut renderbuffer: GlesRenderbuffer;
-            let mut shm_format = None;
+        let rendered = self.backend.with_renderer(|renderer| {
+            render_capture(
+                renderer,
+                &buffer,
+                buffer_size,
+                elements,
+                &client_damage,
+                trackers,
+                hdr.as_ref(),
+                &mut self.pinnacle.capture_hdr_program,
+            )
+        });
 
-            let mut framebuffer = if let Ok(dma) = get_dmabuf(&buffer).cloned() {
-                dmabuf = dma;
-                renderer.bind(&mut dmabuf).unwrap()
-            } else if let Ok(format) = with_buffer_contents(&buffer, |_, _, data| data.format) {
-                shm_format = Some(format);
-                renderbuffer = renderer
-                    .create_buffer(shm_format_to_fourcc(format).unwrap(), buffer_size)
-                    .unwrap();
-                renderer.bind(&mut renderbuffer).unwrap()
-            } else {
-                panic!("captured frame that doesn't have a shm or dma buffer");
-            };
-
-            let elements = client_damage
-                .iter()
-                .map(DynElement::borrowed)
-                .chain(elements.iter().map(DynElement::borrowed))
-                .collect::<Vec<_>>();
-
-            let rendered_damage = trackers
-                .render
-                .render_output(
-                    renderer,
-                    &mut framebuffer,
-                    1,
-                    &elements,
-                    Color32F::TRANSPARENT,
-                )
-                .unwrap();
-
-            if let Some(shm_format) = shm_format {
-                let mapping = renderer
-                    .copy_framebuffer(
-                        &framebuffer,
-                        Rectangle::from_size(buffer_size),
-                        shm_format_to_fourcc(shm_format).unwrap(),
-                    )
-                    .unwrap();
-
-                let bytes = renderer.map_texture(&mapping).unwrap();
-
-                for rect in rendered_damage.damage.unwrap() {
-                    if let Err(err) = crate::render::util::blit(
-                        bytes,
-                        buffer_size,
+        match rendered {
+            Some(Ok(())) => {
+                let damage = damage
+                    .iter()
+                    .map(|rect| {
                         Rectangle::new(
                             (rect.loc.x, rect.loc.y).into(),
                             (rect.size.w, rect.size.h).into(),
-                        ),
-                        &buffer,
-                    ) {
-                        error!("failed to copy capture: {err}");
-                        return;
-                    }
-                }
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                frame.success(Transform::Normal, damage, self.pinnacle.clock.now());
+                Ok(())
             }
-
-            let damage = damage
-                .iter()
-                .map(|rect| {
-                    Rectangle::new(
-                        (rect.loc.x, rect.loc.y).into(),
-                        (rect.size.w, rect.size.h).into(),
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            frame.success(Transform::Normal, damage, self.pinnacle.clock.now());
-        });
-
-        Ok(())
+            Some(Err(err)) => {
+                error!("Failed to capture a frame: {err}");
+                frame.fail(CaptureFailureReason::Unknown);
+                Ok(())
+            }
+            None => {
+                frame.fail(CaptureFailureReason::Unknown);
+                Ok(())
+            }
+        }
     }
+}
+
+/// What a capture of an HDR source has to undo before it can leave as sRGB.
+///
+/// Neither wlr-screencopy nor image-copy-capture carries a colour description, so
+/// a capture client always gets sRGB. The capture therefore composes the source
+/// the way the output renders it - SDR elements through the sRGB-to-PQ shader,
+/// clients that already commit PQ copied unchanged - and converts the result back
+/// at the output's paper white, the same inverse the screencopy path applies.
+/// Content above the paper white clips.
+struct CaptureHdr {
+    /// Where the output maps SDR white, in nits.
+    reference_white: f64,
+    /// Surfaces that are already in the output's encoding, so they must not be
+    /// converted a second time.
+    already_encoded: Vec<smithay::backend::renderer::element::Id>,
+}
+
+impl State {
+    /// The HDR encoding a capture of this output has to convert back from.
+    fn capture_hdr_for_output(&self, output: &Output) -> Option<CaptureHdr> {
+        let hdr = output.with_state(|state| state.hdr);
+        hdr.enabled.then(|| CaptureHdr {
+            reference_white: hdr.reference_white,
+            already_encoded: crate::hdr::EncodedSurfaces::for_windows(
+                self.pinnacle.space.elements_for_output(output),
+            )
+            .ids,
+        })
+    }
+
+    /// The same for a capture of one window, which is encoded by the output it is
+    /// shown on.
+    fn capture_hdr_for_window(&self, window: &WindowElement) -> Option<CaptureHdr> {
+        let hdr = window
+            .output(&self.pinnacle)
+            .map(|output| output.with_state(|state| state.hdr))?;
+        hdr.enabled.then(|| CaptureHdr {
+            reference_white: hdr.reference_white,
+            already_encoded: crate::hdr::EncodedSurfaces::for_windows([window]).ids,
+        })
+    }
+}
+
+/// Renders one capture frame into the client's buffer.
+#[allow(clippy::too_many_arguments)]
+fn render_capture(
+    renderer: &mut GlesRenderer,
+    buffer: &WlBuffer,
+    buffer_size: Size<i32, Buffer>,
+    elements: &[impl RenderElement<GlesRenderer>],
+    client_damage: &[BufferDamageElement],
+    trackers: &mut SessionDamageTrackers,
+    hdr: Option<&CaptureHdr>,
+    program_cache: &mut Option<(f64, GlesTexProgram)>,
+) -> anyhow::Result<()> {
+    let mut dmabuf;
+    let mut renderbuffer: GlesRenderbuffer;
+    let mut shm_format = None;
+
+    let mut framebuffer = if let Ok(dma) = get_dmabuf(buffer).cloned() {
+        dmabuf = dma;
+        renderer.bind(&mut dmabuf)?
+    } else if let Ok(format) = with_buffer_contents(buffer, |_, _, data| data.format) {
+        shm_format = Some(format);
+        renderbuffer =
+            renderer.create_buffer(shm_format_to_fourcc(format).unwrap(), buffer_size)?;
+        renderer.bind(&mut renderbuffer)?
+    } else {
+        anyhow::bail!("captured frame that doesn't have a shm or dma buffer");
+    };
+
+    let elements = client_damage
+        .iter()
+        .map(DynElement::borrowed)
+        .chain(elements.iter().map(DynElement::borrowed))
+        .collect::<Vec<_>>();
+
+    if let Some(hdr) = hdr {
+        return render_hdr_capture(
+            renderer,
+            &mut framebuffer,
+            buffer,
+            buffer_size,
+            shm_format.is_some(),
+            &elements,
+            &mut trackers.render,
+            hdr,
+            program_cache,
+        );
+    }
+
+    let rendered_damage = trackers.render.render_output(
+        renderer,
+        &mut framebuffer,
+        1,
+        &elements,
+        Color32F::TRANSPARENT,
+    )?;
+
+    if let Some(shm_format) = shm_format {
+        let mapping = renderer.copy_framebuffer(
+            &framebuffer,
+            Rectangle::<i32, Buffer>::from_size(buffer_size),
+            shm_format_to_fourcc(shm_format).unwrap(),
+        )?;
+
+        let bytes = renderer.map_texture(&mapping)?;
+
+        for rect in rendered_damage.damage.into_iter().flatten() {
+            blit_rect(bytes, buffer_size, *rect, buffer)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Composes the capture the way the output renders, then converts it back to sRGB.
+#[allow(clippy::too_many_arguments)]
+fn render_hdr_capture(
+    renderer: &mut GlesRenderer,
+    framebuffer: &mut GlesTarget<'_>,
+    buffer: &WlBuffer,
+    buffer_size: Size<i32, Buffer>,
+    is_shm: bool,
+    elements: &[DynElement<GlesRenderer>],
+    damage_tracker: &mut OutputDamageTracker,
+    hdr: &CaptureHdr,
+    program_cache: &mut Option<(f64, GlesTexProgram)>,
+) -> anyhow::Result<()> {
+    let program = capture_program(renderer, hdr.reference_white, program_cache)?;
+    let reference_white = hdr.reference_white;
+
+    let mut offscreen: GlesRenderbuffer =
+        renderer.create_buffer(DrmFourcc::Abgr8888, buffer_size)?;
+    let mut offscreen_fb = renderer.bind(&mut offscreen)?;
+
+    renderer.set_default_tex_program_override(Some((program, Vec::new())));
+    renderer.set_solid_color_transform(Some(Box::new(move |color| {
+        crate::hdr::premultiplied_srgb_to_pq(color, reference_white)
+    })));
+    renderer.set_already_encoded_elements(hdr.already_encoded.clone());
+
+    let rendered = damage_tracker.render_output(
+        renderer,
+        &mut offscreen_fb,
+        1,
+        elements,
+        Color32F::TRANSPARENT,
+    );
+
+    // The hooks are renderer state, so they are cleared even when the render
+    // failed: a leaked override would convert the next frame of every output.
+    renderer.set_default_tex_program_override(None);
+    renderer.set_solid_color_transform(None);
+    renderer.set_already_encoded_elements(Vec::new());
+
+    let rendered = rendered?;
+
+    let mapping = renderer.copy_framebuffer(
+        &offscreen_fb,
+        Rectangle::<i32, Buffer>::from_size(buffer_size),
+        DrmFourcc::Argb8888,
+    )?;
+    let mut bytes = renderer.map_texture(&mapping)?.to_vec();
+    crate::hdr::pq_bgra_to_srgb_in_place(&mut bytes, reference_white);
+
+    if is_shm {
+        for rect in rendered.damage.into_iter().flatten() {
+            blit_rect(&bytes, buffer_size, *rect, buffer)?;
+        }
+        return Ok(());
+    }
+
+    // A dmabuf capture has no CPU mapping to write, and the capture path has no
+    // renderer that can sample its own offscreen as a `DynElement`, so the
+    // converted pixels go back to the GPU as a texture and are drawn 1:1.
+    let texture = renderer.import_memory(&bytes, DrmFourcc::Argb8888, buffer_size, false)?;
+    let size: Size<i32, Physical> = (buffer_size.w, buffer_size.h).into();
+    let full = Rectangle::<i32, Physical>::from_size(size);
+
+    let mut gl_frame = renderer.render(framebuffer, size, Transform::Normal)?;
+    gl_frame.clear(Color32F::TRANSPARENT, &[full])?;
+    gl_frame.render_texture_from_to(
+        &texture,
+        Rectangle::<f64, Buffer>::from_size(buffer_size.to_f64()),
+        full,
+        &[full],
+        &[],
+        Transform::Normal,
+        1.0,
+        None,
+        &[],
+    )?;
+    let _sync = gl_frame.finish()?;
+
+    Ok(())
+}
+
+fn blit_rect(
+    bytes: &[u8],
+    buffer_size: Size<i32, Buffer>,
+    rect: Rectangle<i32, Physical>,
+    buffer: &WlBuffer,
+) -> anyhow::Result<()> {
+    crate::render::util::blit(
+        bytes,
+        buffer_size,
+        Rectangle::new(
+            (rect.loc.x, rect.loc.y).into(),
+            (rect.size.w, rect.size.h).into(),
+        ),
+        buffer,
+    )
+}
+
+/// The sRGB-to-PQ program for this paper white, compiled once per value.
+fn capture_program(
+    renderer: &mut GlesRenderer,
+    reference_white: f64,
+    cache: &mut Option<(f64, GlesTexProgram)>,
+) -> anyhow::Result<GlesTexProgram> {
+    if let Some((compiled_for, program)) = cache.as_ref()
+        && *compiled_for == reference_white
+    {
+        return Ok(program.clone());
+    }
+
+    let program =
+        renderer.compile_custom_texture_shader(crate::hdr::texture_shader(reference_white), &[])?;
+    *cache = Some((reference_white, program.clone()));
+    Ok(program)
 }
 
 impl Pinnacle {
