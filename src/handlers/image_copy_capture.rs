@@ -579,6 +579,17 @@ impl State {
     ) -> Result<(), Frame> {
         let _span = tracy_client::span!();
 
+        // Turning HDR on or off changes every pixel without touching any element,
+        // so a tracker carried across the switch would report no damage and leave
+        // the client with the previous frame's colours until something else moved.
+        let hdr_enabled = hdr.is_some();
+        if trackers.hdr != hdr_enabled {
+            let size = trackers.size();
+            let scale = trackers.scale();
+            *trackers = SessionDamageTrackers::new(size, scale);
+            trackers.hdr = hdr_enabled;
+        }
+
         let (damage, _) = trackers.damage.damage_output(1, elements).unwrap();
         let damage = damage.cloned().unwrap_or_default();
         if damage.is_empty() {
@@ -1026,6 +1037,11 @@ pub struct SessionDamageTrackers {
     /// This is used to render to session buffers, and the returned damage
     /// is used to optimize blitting into said buffers.
     render: OutputDamageTracker,
+    /// Whether the last frame was composed through the HDR conversion.
+    ///
+    /// A toggle changes every pixel without changing any element, so the trackers
+    /// have to be reset to force one full frame through the new path.
+    hdr: bool,
 }
 
 impl SessionDamageTrackers {
@@ -1034,6 +1050,7 @@ impl SessionDamageTrackers {
         Self {
             damage: OutputDamageTracker::new((size.w, size.h), scale, Transform::Normal),
             render: OutputDamageTracker::new((size.w, size.h), scale, Transform::Normal),
+            hdr: false,
         }
     }
 
