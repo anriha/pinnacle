@@ -588,10 +588,16 @@ impl Pinnacle {
             content_type_state: ContentTypeState::new::<State>(&display_handle),
             color_management_state: ColorManagementState::new::<State, _>(
                 &display_handle,
+                // Linear-light descriptions are deliberately not offered. The
+                // conversion program assumes sRGB-encoded input, so a surface that
+                // declares ExtLinear (or the Windows scRGB description, which is the
+                // same encoding) would be decoded and then gamma-encoded again: 0.18
+                // lands at 5.5 nits instead of 14.4, and 1.0 at 203 instead of 80.
+                // Rejecting the description is correct; converting it needs a
+                // linear-to-PQ program, which does not exist yet.
                 [
                     TransferFunction::Srgb,
                     TransferFunction::St2084Pq,
-                    TransferFunction::ExtLinear,
                     TransferFunction::Bt1886,
                 ],
                 [Primaries::Srgb, Primaries::Bt2020],
@@ -601,7 +607,6 @@ impl Pinnacle {
                     Feature::SetLuminances,
                     Feature::SetMasteringDisplayPrimaries,
                     Feature::ExtendedTargetVolume,
-                    Feature::WindowsScrgb,
                     Feature::WindowsBt2100,
                 ],
                 [RenderIntent::Perceptual, RenderIntent::Relative],

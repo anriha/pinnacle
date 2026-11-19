@@ -14,8 +14,9 @@
 
 use smithay::{
     backend::renderer::{Color32F, element::Id},
+    desktop::{PopupManager, layer_map_for_output},
     output::Output,
-    reexports::wayland_server::Resource,
+    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     wayland::{
         color::management::{
             Chromaticities, ImageDescription, Primaries, PrimariesOption, TransferFunction,
@@ -814,10 +815,29 @@ pub struct EncodedSurfaces {
 }
 
 impl EncodedSurfaces {
-    /// Collects the native-encoding surfaces of `windows`.
+    /// Collects the native-encoding surfaces of `windows`, their popups, and the
+    /// layer surfaces of `output` together with theirs.
+    ///
+    /// Layer surfaces and popups are not windows, so they are never visited by the
+    /// window traversal; without them the top bar and every tooltip would be drawn
+    /// through the SDR conversion shader even when the client declared them native,
+    /// and an HDR popup over an HDR window would be encoded twice.
+    pub fn for_output<'a>(
+        windows: impl IntoIterator<Item = &'a WindowElement>,
+        output: &Output,
+    ) -> Self {
+        let mut encoded = Self::for_windows(windows);
+        for layer in layer_map_for_output(output).layers() {
+            let surface = layer.wl_surface();
+            encoded.add_surface_tree(surface, "layer");
+            encoded.add_popups(surface, "layer");
+        }
+        encoded
+    }
+
+    /// Collects the native-encoding surfaces of `windows` and their popups.
     pub fn for_windows<'a>(windows: impl IntoIterator<Item = &'a WindowElement>) -> Self {
         let mut encoded = Self::default();
-        let mut tree = Vec::new();
         for window in windows {
             let class = window.class().unwrap_or_else(|| "?".to_string());
             let Some(toplevel) = window.toplevel() else {
@@ -825,33 +845,45 @@ impl EncodedSurfaces {
                 continue;
             };
 
-            let root = toplevel.wl_surface().clone();
-            tree.clear();
-            with_surface_tree_downward(
-                &root,
-                (),
-                |_, _, _| TraversalAction::DoChildren(()),
-                |surface, _, _| tree.push(surface.clone()),
-                |_, _, _| true,
-            );
-
-            for surface in &tree {
-                let id = Resource::id(surface).protocol_id();
-                let Some(description) = surface_description_in_tree(surface) else {
-                    encoded.undescribed.push(format!("{id}:{class}:none"));
-                    continue;
-                };
-                if !description_matches_output_encoding(&description) {
-                    encoded
-                        .rejected
-                        .push(format!("{id}:{class}:{}", description_tag(&description)));
-                    continue;
-                }
-                encoded.marked.push(format!("{id}:{class}"));
-                encoded.ids.push(Id::from_wayland_resource(surface));
-            }
+            let root = toplevel.wl_surface();
+            encoded.add_surface_tree(root, &class);
+            encoded.add_popups(root, &class);
         }
         encoded
+    }
+
+    /// Adds the popup trees of `root`, which are separate surface trees.
+    fn add_popups(&mut self, root: &WlSurface, class: &str) {
+        for (popup, _) in PopupManager::popups_for_surface(root) {
+            self.add_surface_tree(popup.wl_surface(), &format!("{class}:popup"));
+        }
+    }
+
+    /// Adds `root` and every subsurface under it, classified by their description.
+    fn add_surface_tree(&mut self, root: &WlSurface, class: &str) {
+        let mut tree = Vec::new();
+        with_surface_tree_downward(
+            root,
+            (),
+            |_, _, _| TraversalAction::DoChildren(()),
+            |surface, _, _| tree.push(surface.clone()),
+            |_, _, _| true,
+        );
+
+        for surface in &tree {
+            let id = Resource::id(surface).protocol_id();
+            let Some(description) = surface_description_in_tree(surface) else {
+                self.undescribed.push(format!("{id}:{class}:none"));
+                continue;
+            };
+            if !description_matches_output_encoding(&description) {
+                self.rejected
+                    .push(format!("{id}:{class}:{}", description_tag(&description)));
+                continue;
+            }
+            self.marked.push(format!("{id}:{class}"));
+            self.ids.push(Id::from_wayland_resource(surface));
+        }
     }
 
     /// A signature of the three groups, so a repeat of the same set prints nothing.

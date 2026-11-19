@@ -102,6 +102,24 @@ const SUPPORTED_FORMATS: &[Fourcc] = &[
 ];
 const SUPPORTED_FORMATS_8BIT_ONLY: &[Fourcc] = &[Fourcc::Abgr8888, Fourcc::Argb8888];
 
+/// Whether a scanout format carries enough per-channel precision for PQ.
+///
+/// 10 bits is the floor: 8-bit PQ is the banding case the warning in the render
+/// loop is about, and fp16 is comfortably above it.
+fn format_has_pq_precision(format: Fourcc) -> bool {
+    matches!(
+        format,
+        Fourcc::Abgr2101010
+            | Fourcc::Argb2101010
+            | Fourcc::Xbgr2101010
+            | Fourcc::Xrgb2101010
+            | Fourcc::Abgr16161616f
+            | Fourcc::Argb16161616f
+            | Fourcc::Xbgr16161616f
+            | Fourcc::Xrgb16161616f
+    )
+}
+
 /// A [`MultiRenderer`] that uses the [`GbmGlesBackend`].
 pub type UdevRenderer<'a> = MultiRenderer<
     'a,
@@ -796,6 +814,8 @@ struct RenderSurface {
     hdr_gate: Option<bool>,
     /// Last set of surfaces marked as already encoded, for the diagnostics.
     hdr_encoded_signature: Option<String>,
+    /// Scanout format last reported, so the 8-bit PQ warning fires once per format.
+    hdr_format: Option<Fourcc>,
     previous_gamma: Option<[Box<[u16]>; 3]>,
     pending_gamma_change: PendingGammaChange,
 
@@ -1171,6 +1191,7 @@ impl Udev {
             hdr_scanout: None,
             hdr_gate: None,
             hdr_encoded_signature: None,
+            hdr_format: None,
             previous_gamma: None,
             pending_gamma_change: PendingGammaChange::Idle,
             frame_clock: FrameClock::new(Some(refresh_interval(drm_mode))),
@@ -1577,6 +1598,32 @@ impl Udev {
 
         let scale = output.current_scale().fractional_scale();
 
+        // PQ on an 8-bit scanout loses most of its precision: 256 codes over a
+        // curve that expects thousands is visible banding, not a rounding error.
+        // `use_color_state` succeeding says nothing about the format, and its
+        // TEST_ONLY validation runs on an 8-bit dumb buffer, so the format has to
+        // be read back after the fact.
+        if surface.hdr.enabled {
+            let format = surface.drm_output.format();
+            if surface.hdr_format != Some(format) {
+                surface.hdr_format = Some(format);
+                if !format_has_pq_precision(format) {
+                    warn!(
+                        "{}: HDR is on but the scanout format is {format:?}, which carries fewer \
+                         than 10 bits per channel, so PQ content will band. The primary plane or \
+                         the renderer could not do better: check the connector's max bpc and the \
+                         plane's supported formats.",
+                        output.name()
+                    );
+                } else if surface.hdr_log {
+                    info!(
+                        "{}: HDR scanout format is {format:?}",
+                        output.name()
+                    );
+                }
+            }
+        }
+
         // The shader bakes in the paper white, so it is compiled per configuration
         // and only here: the renderer exists inside a frame, and a failure has to
         // be dealt with before anything below reads the HDR state. Doing it first
@@ -1722,8 +1769,9 @@ impl Udev {
         // swapchain surface. Membership is needed before rendering, because the
         // passthrough decision below asks whether the top element is one of these.
         let encoded_surfaces = if surface.hdr.enabled {
-            Some(crate::hdr::EncodedSurfaces::for_windows(
+            Some(crate::hdr::EncodedSurfaces::for_output(
                 pinnacle.space.elements_for_output(output),
+                output,
             ))
         } else {
             None
@@ -2270,6 +2318,7 @@ impl Udev {
         surface.hdr_gate = None;
         surface.hdr_encoded_signature = None;
         surface.hdr_scanout = None;
+        surface.hdr_format = None;
 
         info!(
             "{} HDR on {}: {} nits SDR white, {} nit peak",
