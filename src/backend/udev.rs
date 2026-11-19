@@ -12,7 +12,7 @@ use wayland_backend::server::GlobalId;
 
 use std::{collections::HashMap, mem, path::Path, time::Duration};
 
-use anyhow::{Context, anyhow, ensure};
+use anyhow::{Context, anyhow, bail, ensure};
 use drm::{create_drm_mode, refresh_interval};
 use smithay::{
     backend::{
@@ -2554,101 +2554,69 @@ fn handle_pending_screencopy<'a>(
             screencopy.damage(&damage);
         }
 
-        // A screencopy of an HDR output has to leave as sRGB, or every screenshot
-        // is colour-shifted. Render the composed frame into an offscreen buffer
-        // once, then either hand the pixels to a shm client or upload them back
-        // for a dmabuf client.
         let untransformed_size = untransformed_output_size;
         let output_buffer_size = untransformed_size
             .to_logical(1)
             .to_buffer(1, Transform::Normal);
 
-        let mut offscreen: smithay::backend::renderer::gles::GlesRenderbuffer = match renderer
-            .create_buffer(
-                smithay::backend::allocator::Fourcc::Abgr8888,
-                output_buffer_size,
-            ) {
-            Ok(buffer) => buffer,
-            Err(err) => {
-                error!("Failed to create screencopy buffer: {err}");
-                continue;
-            }
-        };
+        // A screencopy of an HDR output leaves the compositor as PQ, so every
+        // screenshot would be colour-shifted; it takes a detour through an
+        // offscreen buffer where the frame can be decoded back to sRGB. An SDR
+        // output is already the frame the client asked for: reading it back only
+        // to copy it again would cost a frame of memory traffic for nothing.
+        let sync_point = if surface.hdr.enabled {
+            (|| -> anyhow::Result<Option<SyncPoint>> {
+                let mut offscreen: GlesRenderbuffer = renderer.create_buffer(
+                    smithay::backend::allocator::Fourcc::Abgr8888,
+                    output_buffer_size,
+                )?;
 
-        let cursor_ids = if !screencopy.overlay_cursor() {
-            cursor_ids.clone()
-        } else {
-            Vec::new()
-        };
+                let mut offscreen_fb = renderer.bind(&mut offscreen)?;
 
-        let sync_point = {
-            let mut offscreen_fb = match renderer.bind(&mut offscreen) {
-                Ok(fb) => fb,
-                Err(err) => {
-                    error!("Failed to bind screencopy buffer: {err}");
-                    continue;
-                }
-            };
+                // The blit and the readback below run on one GL context, so they
+                // are already ordered; a sync point is for handing a texture to
+                // another GPU, and this frame is read back right here.
+                let _sync = render_frame_result.blit_frame_result(
+                    untransformed_size,
+                    Transform::Normal,
+                    output.current_scale().fractional_scale(),
+                    renderer,
+                    &mut offscreen_fb,
+                    [Rectangle::from_size(untransformed_size)],
+                    if !screencopy.overlay_cursor() {
+                        cursor_ids.clone()
+                    } else {
+                        Vec::new()
+                    },
+                )?;
 
-            let blitted = render_frame_result.blit_frame_result(
-                untransformed_size,
-                Transform::Normal,
-                output.current_scale().fractional_scale(),
-                renderer,
-                &mut offscreen_fb,
-                [Rectangle::from_size(untransformed_size)],
-                cursor_ids,
-            );
-
-            if let Err(err) = blitted {
-                error!("Failed to blit screencopy frame: {err}");
-                continue;
-            }
-
-            // Convert on the CPU: the frame is PQ/BT.2020 and the clients want
-            // sRGB. Reading back and re-uploading costs a frame's worth of
-            // memory traffic, which is fine for screenshots and slow for
-            // full-rate recording; the GL fast path needs a renderer that can
-            // sample its own offscreen through the MultiRenderer texture type.
-            let mapping = match renderer.copy_framebuffer(
-                &offscreen_fb,
-                Rectangle::<i32, smithay::utils::Buffer>::from_size(output_buffer_size),
-                smithay::backend::allocator::Fourcc::Argb8888,
-            ) {
-                Ok(mapping) => mapping,
-                Err(err) => {
-                    error!("Failed to read screencopy frame: {err}");
-                    continue;
-                }
-            };
-
-            let mut converted: Vec<u8> = match renderer.map_texture(&mapping) {
-                Ok(bytes) => bytes.to_vec(),
-                Err(err) => {
-                    error!("Failed to map screencopy frame: {err}");
-                    continue;
-                }
-            };
-
-            if surface.hdr.enabled {
+                // The frame is PQ/BT.2020 and the client wants sRGB. This is the
+                // CPU twin of the capture path's inverse program; a screencopy
+                // pays the readback because this renderer cannot sample its own
+                // offscreen as a render element.
+                let mapping = renderer.copy_framebuffer(
+                    &offscreen_fb,
+                    Rectangle::<i32, smithay::utils::Buffer>::from_size(output_buffer_size),
+                    smithay::backend::allocator::Fourcc::Argb8888,
+                )?;
+                let mut converted = renderer.map_texture(&mapping)?.to_vec();
                 crate::hdr::pq_bgra_to_srgb_in_place(&mut converted, surface.hdr.reference_white);
-            }
 
-            let dst_region = screencopy.physical_region();
+                let dst_region = screencopy.physical_region();
 
-            if let Ok(mut dmabuf) = dmabuf::get_dmabuf(screencopy.buffer()).cloned() {
-                trace!("Dmabuf screencopy");
+                if let Ok(mut dmabuf) = dmabuf::get_dmabuf(screencopy.buffer()).cloned() {
+                    trace!("Dmabuf screencopy");
 
-                let format_correct =
-                    Some(dmabuf.format().code) == shm_format_to_fourcc(wl_shm::Format::Argb8888);
-                let width_correct = dmabuf.width() == dst_region.size.w as u32;
-                let height_correct = dmabuf.height() == dst_region.size.h as u32;
+                    let format_correct = Some(dmabuf.format().code)
+                        == shm_format_to_fourcc(wl_shm::Format::Argb8888);
+                    let width_correct = dmabuf.width() == dst_region.size.w as u32;
+                    let height_correct = dmabuf.height() == dst_region.size.h as u32;
 
-                if !(format_correct && width_correct && height_correct) {
-                    continue;
-                }
+                    ensure!(
+                        format_correct && width_correct && height_correct,
+                        "dmabuf screencopy has the wrong format or size"
+                    );
 
-                (|| -> anyhow::Result<Option<SyncPoint>> {
                     let texture = renderer.import_memory(
                         &converted,
                         smithay::backend::allocator::Fourcc::Argb8888,
@@ -2663,7 +2631,8 @@ fn handle_pending_screencopy<'a>(
                         (dst_region.loc.x as f64, dst_region.loc.y as f64).into(),
                         (dst_region.size.w as f64, dst_region.size.h as f64).into(),
                     );
-                    let dst = Rectangle::<i32, smithay::utils::Physical>::from_size(dst_region.size);
+                    let dst =
+                        Rectangle::<i32, smithay::utils::Physical>::from_size(dst_region.size);
                     frame.render_texture_from_to(
                         &texture,
                         src,
@@ -2675,14 +2644,16 @@ fn handle_pending_screencopy<'a>(
                     )?;
                     let sync_point = frame.finish()?;
 
-                    Ok(Some(sync_point))
-                })()
-            } else if !matches!(
-                renderer::buffer_type(screencopy.buffer()),
-                Some(BufferType::Shm)
-            ) {
-                Err(anyhow!("not a shm buffer"))
-            } else {
+                    return Ok(Some(sync_point));
+                }
+
+                if !matches!(
+                    renderer::buffer_type(screencopy.buffer()),
+                    Some(BufferType::Shm)
+                ) {
+                    bail!("not a shm buffer");
+                }
+
                 trace!("Shm screencopy");
 
                 smithay::wayland::shm::with_buffer_contents_mut(
@@ -2712,9 +2683,8 @@ fn handle_pending_screencopy<'a>(
                         // a writable shm mapping of `shm_len == region` bytes.
                         unsafe {
                             for row in 0..region_h {
-                                let src = converted
-                                    .as_ptr()
-                                    .add((src_y + row) * full_stride + src_x);
+                                let src =
+                                    converted.as_ptr().add((src_y + row) * full_stride + src_x);
                                 let dst = shm_ptr.add(row * row_bytes);
                                 std::ptr::copy_nonoverlapping(src, dst, row_bytes);
                             }
@@ -2724,9 +2694,155 @@ fn handle_pending_screencopy<'a>(
                     },
                 )
                 .unwrap_or_else(|_| unreachable!())
-            }
-        };
+            })()
+        } else if let Ok(mut dmabuf) = dmabuf::get_dmabuf(screencopy.buffer()).cloned() {
+            trace!("Dmabuf screencopy");
 
+            let format_correct =
+                Some(dmabuf.format().code) == shm_format_to_fourcc(wl_shm::Format::Argb8888);
+            let width_correct = dmabuf.width() == screencopy.physical_region().size.w as u32;
+            let height_correct = dmabuf.height() == screencopy.physical_region().size.h as u32;
+
+            if !(format_correct && width_correct && height_correct) {
+                continue;
+            }
+
+            (|| -> anyhow::Result<Option<SyncPoint>> {
+                if screencopy.physical_region() == Rectangle::from_size(untransformed_output_size) {
+                    // Optimization to not have to do an extra blit;
+                    // just blit the whole output
+                    let mut framebuffer = renderer.bind(&mut dmabuf)?;
+
+                    Ok(Some(render_frame_result.blit_frame_result(
+                        screencopy.physical_region().size,
+                        Transform::Normal,
+                        output.current_scale().fractional_scale(),
+                        renderer,
+                        &mut framebuffer,
+                        [screencopy.physical_region()],
+                        if !screencopy.overlay_cursor() {
+                            cursor_ids.clone()
+                        } else {
+                            Vec::new()
+                        },
+                    )?))
+                } else {
+                    // `RenderFrameResult::blit_frame_result` doesn't expose a way to
+                    // blit from a source rectangle, so blit into another buffer
+                    // then blit from that into the dmabuf.
+
+                    let mut offscreen: GlesRenderbuffer = renderer.create_buffer(
+                        smithay::backend::allocator::Fourcc::Abgr8888,
+                        output_buffer_size,
+                    )?;
+
+                    let mut offscreen_fb = renderer.bind(&mut offscreen)?;
+
+                    // TODO: Figure out if this sync point needs waiting
+                    let _ = render_frame_result.blit_frame_result(
+                        untransformed_output_size,
+                        Transform::Normal,
+                        output.current_scale().fractional_scale(),
+                        renderer,
+                        &mut offscreen_fb,
+                        [Rectangle::from_size(untransformed_output_size)],
+                        if !screencopy.overlay_cursor() {
+                            cursor_ids.clone()
+                        } else {
+                            Vec::new()
+                        },
+                    )?;
+
+                    let mut dmabuf_fb = renderer.bind(&mut dmabuf)?;
+
+                    let sync_point = renderer.blit(
+                        &offscreen_fb,
+                        &mut dmabuf_fb,
+                        screencopy.physical_region(),
+                        Rectangle::from_size(screencopy.physical_region().size),
+                        TextureFilter::Linear,
+                    )?;
+
+                    Ok(Some(sync_point))
+                }
+            })()
+        } else if !matches!(
+            renderer::buffer_type(screencopy.buffer()),
+            Some(BufferType::Shm)
+        ) {
+            Err(anyhow!("not a shm buffer"))
+        } else {
+            trace!("Shm screencopy");
+
+            let res = smithay::wayland::shm::with_buffer_contents_mut(
+                &screencopy.buffer().clone(),
+                |shm_ptr, shm_len, buffer_data| {
+                    // yoinked from Niri (thanks yall)
+                    ensure!(
+                        // The buffer prefers pixels in little endian ...
+                        buffer_data.format == wl_shm::Format::Argb8888
+                            && buffer_data.stride == screencopy.physical_region().size.w * 4
+                            && buffer_data.height == screencopy.physical_region().size.h
+                            && shm_len as i32 == buffer_data.stride * buffer_data.height,
+                        "invalid buffer format or size"
+                    );
+
+                    let src_buffer_rect = screencopy.physical_region().to_logical(1).to_buffer(
+                        1,
+                        Transform::Normal,
+                        &screencopy.physical_region().size.to_logical(1),
+                    );
+
+                    let mut offscreen: GlesRenderbuffer = renderer.create_buffer(
+                        smithay::backend::allocator::Fourcc::Abgr8888,
+                        output_buffer_size,
+                    )?;
+
+                    let mut framebuffer = renderer.bind(&mut offscreen)?;
+
+                    // Blit the entire output to `offscreen`.
+                    // Only the needed region will be copied below
+                    let sync_point = render_frame_result.blit_frame_result(
+                        untransformed_output_size,
+                        Transform::Normal,
+                        output.current_scale().fractional_scale(),
+                        renderer,
+                        &mut framebuffer,
+                        [Rectangle::from_size(untransformed_output_size)],
+                        if !screencopy.overlay_cursor() {
+                            cursor_ids.clone()
+                        } else {
+                            Vec::new()
+                        },
+                    )?;
+
+                    // Can someone explain to me why it feels like some things are
+                    // arbitrarily `Physical` or `Buffer`
+                    let mapping = renderer.copy_framebuffer(
+                        &framebuffer,
+                        src_buffer_rect,
+                        smithay::backend::allocator::Fourcc::Argb8888,
+                    )?;
+
+                    let bytes = renderer.map_texture(&mapping)?;
+
+                    ensure!(bytes.len() == shm_len, "mapped buffer has wrong length");
+
+                    // SAFETY: TODO: safety docs
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), shm_ptr, shm_len);
+                    }
+
+                    Ok(Some(sync_point))
+                },
+            );
+
+            let Ok(res) = res else {
+                unreachable!();
+            };
+
+            res
+        };
         match sync_point {
             Ok(Some(sync_point)) if !sync_point.is_reached() => {
                 let Some(sync_fd) = sync_point.export() else {
