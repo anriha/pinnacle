@@ -1564,7 +1564,7 @@ impl Udev {
         // nothing about scanout: a frame only goes out untouched when nothing has
         // to be drawn on top of that window either, which is decided below once
         // the element list exists.
-        let hdr_passthrough = surface.hdr.enabled && hdr_content_fullscreen(pinnacle, output);
+        let hdr_passthrough = surface.hdr.enabled && fullscreen_content_is_native(pinnacle, output);
 
         // Element geometry is physical and relative to this output's top-left
         // corner, so this is what tells a cursor on this output from one on
@@ -1641,48 +1641,6 @@ impl Udev {
         } else {
             CLEAR_COLOR_LOCKED
         };
-
-        // A frame whose topmost element is the HDR client's own buffer covering
-        // the whole output is already in the output's encoding, so a copy is the
-        // correct conversion and running the SDR shader over it would encode it
-        // twice. This is what makes fullscreen HDR content look right even when
-        // the primary plane cannot scan the client's buffer out (an fp16
-        // swapchain, for instance).
-        //
-        // Elements *below* it do not matter: an opaque element covering the output
-        // culls everything underneath, and real frames are never a single element
-        // (a tiling layout keeps every window on the output, plus layer surfaces).
-        //
-        // The cursor is part of the decision. In HDR mode it cannot use its plane
-        // (the hardware would blend sRGB into the PQ signal) and any element above
-        // the primary plane forces composition, so a cursor over the output means
-        // the frame is composited - which is converted, and therefore correct.
-        // Losing scanout for it is the price of a visible pointer; a client that
-        // hides its cursor keeps it.
-        let first_element_geometry = output_render_elements
-            .first()
-            .map(|element| element.geometry(smithay::utils::Scale::from(scale)));
-        let hdr_passthrough_frame = PassthroughFrame {
-            hdr_passthrough,
-            cursor_on_output,
-            top_is_full_output_surface: output_render_elements
-                .first()
-                .is_some_and(|element| matches!(element, OutputRenderElement::Surface(_)))
-                && first_element_geometry == Some(output_physical),
-        }
-        .can_passthrough();
-
-        // The cursor belongs on top of a composited frame. It is only absent on the
-        // passthrough path, where there is nothing to draw it over: the client's
-        // buffer fills the output and the pointer is hidden or on another output.
-        if !hdr_passthrough_frame {
-            output_render_elements.splice(
-                0..0,
-                pointer_render_elements
-                    .into_iter()
-                    .map(OutputRenderElement::from),
-            );
-        }
 
         // Elements whose client already outputs this output's encoding. They are
         // drawn as a copy instead of through the conversion shader, which is what
@@ -1779,6 +1737,55 @@ impl Udev {
         } else {
             Vec::new()
         };
+        // A frame whose topmost element is the HDR client's own buffer covering
+        // the whole output is already in the output's encoding, so a copy is the
+        // correct conversion and running the SDR shader over it would encode it
+        // twice. This is what makes fullscreen HDR content look right even when
+        // the primary plane cannot scan the client's buffer out (an fp16
+        // swapchain, for instance).
+        //
+        // The top element has to *be* native, not merely cover the output: an SDR
+        // layer surface above a fullscreen HDR window is exactly as wide, and
+        // passing the frame through would send its sRGB pixels to the panel as PQ.
+        // Membership in `already_encoded` is what settles that.
+        //
+        // Elements *below* it do not matter: an opaque element covering the output
+        // culls everything underneath, and real frames are never a single element
+        // (a tiling layout keeps every window on the output, plus layer surfaces).
+        //
+        // The cursor is part of the decision. In HDR mode it cannot use its plane
+        // (the hardware would blend sRGB into the PQ signal) and any element above
+        // the primary plane forces composition, so a cursor over the output means
+        // the frame is composited - which is converted, and therefore correct.
+        // Losing scanout for it is the price of a visible pointer; a client that
+        // hides its cursor keeps it.
+        let first_element_geometry = output_render_elements
+            .first()
+            .map(|element| element.geometry(smithay::utils::Scale::from(scale)));
+        let top_is_native_full_output_surface =
+            output_render_elements.first().is_some_and(|element| {
+                matches!(element, OutputRenderElement::Surface(_))
+                    && already_encoded.iter().any(|known| element.id() == known)
+            }) && first_element_geometry == Some(output_physical);
+        let hdr_passthrough_frame = PassthroughFrame {
+            hdr_passthrough,
+            cursor_on_output,
+            top_is_native_full_output_surface,
+        }
+        .can_passthrough();
+
+        // The cursor belongs on top of a composited frame. It is only absent on the
+        // passthrough path, where there is nothing to draw it over: the client's
+        // buffer fills the output and the pointer is hidden or on another output.
+        if !hdr_passthrough_frame {
+            output_render_elements.splice(
+                0..0,
+                pointer_render_elements
+                    .into_iter()
+                    .map(OutputRenderElement::from),
+            );
+        }
+
         let already_encoded_count = already_encoded.len();
         // The geometry of each matching element, so the log says whether the marked
         // element is the client's picture or a small overlay that happens to carry
@@ -1841,10 +1848,10 @@ impl Udev {
 
         if surface.hdr.enabled {
             // Cursor and overlay planes bypass the convert shader entirely, so their
-            // pixels would be read as PQ. Only the primary plane may scan out, and
-            // only when the fullscreen window is HDR content itself.
+            // pixels would be read as PQ. The primary plane may only scan out when
+            // the frame is the client's native-encoding buffer and nothing else.
             frame_flags.remove(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
-            if !hdr_content_fullscreen(pinnacle, output) {
+            if !hdr_passthrough_frame {
                 frame_flags.remove(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY);
             }
         }
@@ -2316,11 +2323,12 @@ fn render_surface_for_output<'a>(
 // Use an OutputDamageTracker or something
 /// Whether the output shows a fullscreen window whose client content is HDR.
 ///
+/// Whether a fullscreen window on this output is itself in the output's encoding.
+///
 /// Direct primary-plane scanout skips the convert shader, so it is only correct
-/// for BT.2020/PQ content; SDR content must be composited through the shader.
-fn hdr_content_fullscreen(pinnacle: &Pinnacle, output: &Output) -> bool {
-    use smithay::wayland::color::management::get_surface_description;
-
+/// for BT.2020/PQ content; SDR, HLG and scRGB content all have to be composited
+/// through the shader.
+fn fullscreen_content_is_native(pinnacle: &Pinnacle, output: &Output) -> bool {
     // Must be a fullscreen window *on this output*: taking the first fullscreen
     // window in the space would let a fullscreen window on another monitor veto
     // passthrough here.
@@ -2339,24 +2347,28 @@ fn hdr_content_fullscreen(pinnacle: &Pinnacle, output: &Output) -> bool {
         return false;
     };
 
-    get_surface_description(toplevel.wl_surface())
-        .0
-        .is_some_and(|description| description.is_hdr())
+    // `is_hdr` is not enough: it is also true for HLG, for scRGB and for BT.2020
+    // primaries with an SDR transfer function, and none of those are what the
+    // connector is being told to expect. Only PQ with BT.2020 primaries is.
+    crate::hdr::surface_description_in_tree(toplevel.wl_surface())
+        .is_some_and(|description| crate::hdr::description_matches_output_encoding(&description))
 }
 
 /// What the frame's element list says about handing it to the panel untouched.
 ///
 /// A frame can only skip the SDR-to-PQ conversion when every pixel in it is
-/// already in the output's encoding. That is the case for a fullscreen HDR client
-/// whose buffer covers the whole output and which has nothing composited above it.
+/// already in the output's encoding. That is the case for a fullscreen client
+/// whose own buffer covers the whole output, which has nothing composited above
+/// it, and whose committed description is BT.2020/PQ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PassthroughFrame {
-    /// A fullscreen HDR window is on this output.
+    /// A fullscreen window on this output declares BT.2020/PQ itself.
     hdr_passthrough: bool,
     /// A cursor element - the pointer or a drag icon - lands on this output.
     cursor_on_output: bool,
-    /// The topmost element is a client surface covering the whole output.
-    top_is_full_output_surface: bool,
+    /// The topmost element is a native-encoding client surface covering the whole
+    /// output, i.e. one of the `already_encoded` elements.
+    top_is_native_full_output_surface: bool,
 }
 
 impl PassthroughFrame {
@@ -2369,7 +2381,7 @@ impl PassthroughFrame {
     /// buffer is copied rather than converted again - and it is what keeps the
     /// pointer visible over fullscreen HDR content.
     fn can_passthrough(self) -> bool {
-        self.hdr_passthrough && !self.cursor_on_output && self.top_is_full_output_surface
+        self.hdr_passthrough && !self.cursor_on_output && self.top_is_native_full_output_surface
     }
 }
 
@@ -2775,11 +2787,11 @@ mod hdr_dump_tests {
 mod passthrough_tests {
     use super::PassthroughFrame;
 
-    fn frame(cursor_on_output: bool, top_is_full_output_surface: bool) -> PassthroughFrame {
+    fn frame(cursor_on_output: bool, top_is_native_full_output_surface: bool) -> PassthroughFrame {
         PassthroughFrame {
             hdr_passthrough: true,
             cursor_on_output,
-            top_is_full_output_surface,
+            top_is_native_full_output_surface,
         }
     }
 

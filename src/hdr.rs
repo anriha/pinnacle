@@ -836,6 +836,27 @@ mod tests {
 
         assert!(!description_matches_output_encoding(&ImageDescription::SRGB));
         assert!(!description_matches_output_encoding(&ImageDescription::WINDOWS_SCRGB));
+
+        // HLG is HDR, but it is not the encoding the connector is driven with, so
+        // its pixels still need converting.
+        let mut hlg = pq_2020;
+        hlg.transfer = TransferFunction::Hlg;
+        assert!(!description_matches_output_encoding(&hlg));
+
+        // BT.2020 primaries with an SDR transfer function: the transfer decides,
+        // primaries alone do not.
+        let mut bt2020_sdr = pq_2020;
+        bt2020_sdr.transfer = TransferFunction::Srgb;
+        assert!(!description_matches_output_encoding(&bt2020_sdr));
+
+        // The mirror image: PQ in sRGB primaries is the third combination that is
+        // not the connector's encoding.
+        let mut srgb_pq = pq_2020;
+        srgb_pq.primaries = PrimariesOption {
+            named: Some(Primaries::Srgb),
+            values: None,
+        };
+        assert!(!description_matches_output_encoding(&srgb_pq));
     }
 
     #[test]
