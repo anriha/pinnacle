@@ -1,11 +1,11 @@
 package = "pinnacle-api"
 version = "dev-1"
 source = {
-    url = "git+https://github.com/pinnacle-comp/pinnacle",
+    url = "git+https://codeberg.org/anriha/pinnacle",
     dir = "pinnacle/api/lua",
 }
 description = {
-    homepage = "https://github.com/pinnacle-comp/pinnacle",
+    homepage = "https://codeberg.org/anriha/pinnacle",
     license = "MPL 2.0",
 }
 dependencies = {

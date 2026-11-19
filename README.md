@@ -1,18 +1,15 @@
 ![Pinnacle banner](/assets/pinnacle_banner_dark.png)
 
-<div align="center">
-
-[![Discord](https://img.shields.io/discord/1223351743522537565?style=for-the-badge&logo=discord&logoColor=white&label=Discord&labelColor=%235865F2&color=%231825A2)](https://discord.gg/JhpKtU2aMA)
-[![Matrix](https://img.shields.io/matrix/pinnacle%3Amatrix.org?style=for-the-badge&logo=matrix&logoColor=white&label=Matrix&labelColor=black&color=gray)](https://matrix.to/#/#pinnacle:matrix.org)
-
-</div>
-
-<img width="2560" height="1440" alt="pinnacle image" src="https://github.com/user-attachments/assets/30cd3ee4-9293-4f9f-93fe-2d8edca953f2" />
+<img width="1920" height="1080" alt="Pinnacle screenshot" src="/assets/pinnacle_screenshot.webp" />
 
 ## About
 Pinnacle is a Wayland compositor built in Rust using [Smithay](https://github.com/Smithay/smithay).
 It's my attempt at creating something like [AwesomeWM](https://github.com/awesomeWM/awesome)
 for Wayland.
+
+This repository is a fork of [pinnacle-comp/pinnacle](https://github.com/pinnacle-comp/pinnacle),
+which has had no upstream activity since 2026-06-27. The fork adds HDR output
+support and the fixes needed to run Pinnacle as a daily driver.
 
 ## Features
 - Tag system
@@ -22,21 +19,31 @@ for Wayland.
 - Floating window support
 - Xwayland support
 - Configurable in Lua or Rust
+- HDR output (fork)
 - Is very cool 👍
 
 ## Getting started, building, and running
 
-Read the [wiki](https://pinnacle-comp.github.io/pinnacle/getting-started/introduction.html) to get started.
+Read the [upstream wiki](https://pinnacle-comp.github.io/pinnacle/getting-started/introduction.html)
+to get started. It documents the compositor as of the last upstream release and
+mostly still applies.
 
 ## Roadmap
-- See [#403](https://github.com/pinnacle-comp/pinnacle/issues/403)
+
+See [`TODO.md`](TODO.md). The upstream roadmap issue
+([#403](https://github.com/pinnacle-comp/pinnacle/issues/403)) is dormant.
 
 ## API references
 <b>Lua: https://pinnacle-comp.github.io/lua-reference<br>
 Rust: https://pinnacle-comp.github.io/rust-reference/main</b>
 
-## Feature Requests, Bug Reports, Contributions, and Questions
-See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+These are built from the last upstream release and do not cover the fork's
+additions.
+
+## Contributing
+
+This is a personal fork and has no contribution process. It exists so that one
+machine keeps a working compositor; it is not a community project.
 
 ## Special Thanks
 - [Smithay](https://github.com/Smithay/smithay): For being a great compositor library and also allowing me not to deal with all the graphics stuff I still don't understand

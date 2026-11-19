@@ -1,0 +1,110 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    runs-on: nixos-host
+    name: Build and test
+    steps:
+      - uses: actions/checkout@v4
+      # The derivation runs the integration suite in checkPhase, so this covers
+      # build + test in one cached step. A published override only rebuilds when
+      # the source or the lockfile actually changed.
+      - name: nix build
+        run: nix build .#pinnacle --no-link --print-build-logs
+
+  lint:
+    runs-on: nixos-host
+    name: Formatting and clippy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('rust-toolchain.toml', 'flake.lock') }}
+          restore-keys: |
+            rust-${{ hashFiles('Cargo.lock') }}-
+            rust-
+
+      - name: Check formatting
+        run: nix develop -c cargo fmt --all -- --check
+
+      - name: Clippy
+        run: nix develop -c cargo clippy --all -- -D warnings
+
+  wlcs:
+    runs-on: nixos-host
+    name: "WLCS: ${{ matrix.job_name }}"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - job_name: "Core"
+            gtest_filter:
+              "SelfTest*:FrameSubmission*\
+              :-FrameSubmission.when_client_endlessly_requests_frame_then_callbacks_are_throttled"
+          - job_name: "Output"
+            gtest_filter: "XdgOutputV1Test*"
+          - job_name: "WlOutput"
+            gtest_filter: "WlOutputTest*"
+          - job_name: "Viewporter"
+            gtest_filter:
+              "WpViewporter*\
+              :-WpViewporterTest.when_destination_is_not_set_source_must_have_integer_size\
+              :WpViewporterTest.source_rectangle_out_of_buffer_bounds_raises_protocol_error\
+              :WpViewporterTest.assigning_a_viewport_to_a_surface_with_an_existing_viewport_is_an_error"
+          - job_name: "Pointer constraints"
+            gtest_filter:
+              "PointerConstraints.*\
+              :-PointerConstraints.when_surface_is_reselected_persistent_confined_pointer_gets_notifications\
+              :PointerConstraints.when_surface_is_unselected_confined_pointer_gets_unconfined_notification\
+              :PointerConstraints.when_surface_is_reselected_persistent_locked_pointer_gets_notifications\
+              :PointerConstraints.when_surface_is_unselected_locked_pointer_gets_unlocked_notification"
+          - job_name: "Foreign toplevel"
+            gtest_filter:
+              "ForeignToplevelManagerTest.does_not_detect_toplevels_when_test_creates_none\
+              :ForeignToplevelManagerTest.detects_toplevel_from_same_client\
+              :ForeignToplevelManagerTest.detects_toplevel_from_different_client\
+              :ForeignToplevelManagerTest.detects_toplevel_created_after_manager\
+              :ForeignToplevelManagerTest.detects_multiple_toplevels_from_multiple_clients"
+          - job_name: "Layer shell: anchoring"
+            gtest_filter:
+              "Anchors/LayerSurfaceErrorsTest.specifying_zero_size_without_corresponding_anchors_is_an_error*\
+              :Anchor/LayerSurfaceLayoutTest.is_positioned_correctly_when_explicit_size_does_not_match_buffer_size*\
+              :Anchor/LayerSurfaceLayoutTest.is_positioned_correctly_when_layout_changed*\
+              :Anchor/LayerSurfaceLayoutTest.is_positioned_correctly_after_multiple_changes*\
+              :Anchor/LayerSurfaceLayoutTest.surfaces_with_exclusive_zone_set_to_negative_one_do_not_respect_other_exclusive_zones*"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the compiled wlcs
+        uses: actions/cache@v4
+        with:
+          path: wlcs
+          key: wlcs-${{ hashFiles('./justfile') }}
+
+      - name: Run
+        env:
+          # just wants a writable runtime dir; the runner's /run/user/* is not
+          # guaranteed to be writable for the service user.
+          XDG_RUNTIME_DIR: ${{ github.workspace }}/.runtime
+        run: |
+          mkdir -p "$XDG_RUNTIME_DIR"
+          nix develop -c just wlcs --gtest_filter="${{ matrix.gtest_filter }}"

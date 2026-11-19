@@ -65,6 +65,17 @@
               #!/bin/sh
               ${wlcs}/libexec/wlcs/wlcs "$@"
             '')
+            # `just wlcs` compiles the pinned wlcs revision from source, so the
+            # toolchain it needs has to be in the shell rather than inherited
+            # from nixpkgs' wlcs build inputs.
+            cmake
+            gnumake
+            gtest
+            boost
+            # wlcs' CMakeLists looks these up through pkg-config, and they are
+            # separate packages in nixpkgs rather than wayland inputs.
+            wayland-scanner
+            libffi
 
             wayland
 

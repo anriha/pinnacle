@@ -81,11 +81,15 @@ compile-wlcs:
         echo "WLCS is already compiled"
     else
         echo "Compiling WLCS"
+        # A half-built or stale tree (a restored CI cache, an interrupted run)
+        # must not make the clone below fail.
+        rm -rf wlcs
         git clone https://github.com/canonical/wlcs
         cd wlcs || exit
         # checkout a specific revision
         git reset --hard "${WLCS_SHA}"
-        cmake -DWLCS_BUILD_ASAN=False -DWLCS_BUILD_TSAN=False -DWLCS_BUILD_UBSAN=False -DCMAKE_EXPORT_COMPILE_COMMANDS=1 .
+        # gtest 1.18 deprecates the Invoke() wrapper wlcs uses, and wlcs builds with -Werror.
+        cmake -DWLCS_BUILD_ASAN=False -DWLCS_BUILD_TSAN=False -DWLCS_BUILD_UBSAN=False -DCMAKE_EXPORT_COMPILE_COMMANDS=1 -DCMAKE_CXX_FLAGS=-Wno-deprecated-declarations .
         make -j 8
     fi
 

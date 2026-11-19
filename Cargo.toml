@@ -10,10 +10,6 @@ members = [
     "snowcap/api/rust",
     "snowcap/snowcap-api-defs",
 ]
-exclude = [
-    "lcat", # The docs building repo is currently cloned into this repo in CI
-]
-
 [workspace.package]
 version = "0.2.2"
 authors = ["Ottatop <ottatop1227@gmail.com>"]
