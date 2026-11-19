@@ -285,12 +285,17 @@ impl State {
 
         output.with_state_mut(|state| state.hdr = config);
         self.pinnacle.update_preferred_descriptions(output);
+        self.pinnacle
+            .color_management_state
+            .output_description_changed(output);
         self.schedule_render(output);
         Ok(())
     }
 
     pub fn on_event_loop_cycle_completion(&mut self) {
         let _span = tracy_client::span!("State::on_event_loop_cycle_completion");
+
+        self.pinnacle.sync_preferred_descriptions();
 
         self.notify_blocker_cleared();
         self.update_layout();
@@ -384,6 +389,21 @@ impl Pinnacle {
         for surface in surfaces {
             self.color_management_state
                 .preferred_changed(&surface, description.clone());
+        }
+    }
+
+    /// Re-announces every surface's preferred description.
+    ///
+    /// `preferred_changed` deduplicates per surface, so calling this from the
+    /// event loop is cheap and covers everything that can change the answer: a
+    /// window moving between outputs, an output being enabled, disabled or
+    /// replugged, and the HDR gate flipping. The pull side
+    /// (`preferred_description_for_surface`) computes the same answer for clients
+    /// that ask instead of waiting.
+    pub fn sync_preferred_descriptions(&mut self) {
+        let outputs = self.outputs.clone();
+        for output in outputs {
+            self.update_preferred_descriptions(&output);
         }
     }
 
