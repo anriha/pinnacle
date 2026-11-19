@@ -245,6 +245,141 @@ pub fn texture_shader(ref_white: f64) -> String {
     )
 }
 
+/// GLSL ES 1.00 shader template that converts an already-composed BT.2020/PQ
+/// frame back into sRGB.
+///
+/// The exact inverse of [`HDR_TEXTURE_SHADER_TEMPLATE`]: PQ decode, BT.2020 to
+/// BT.709, divide by the paper white, sRGB encode. Used for screencopies, so a
+/// screenshot of an HDR desktop matches what the same desktop looks like at that
+/// paper white in SDR. Everything above the paper white clips; there is no tone
+/// mapping, because a screenshot has no headroom to map to.
+pub const PQ_TO_SRGB_TEXTURE_SHADER_TEMPLATE: &str = r#"#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+precision highp float;
+
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform float alpha;
+
+varying vec2 v_coords;
+
+const float REF_WHITE = 203.0;
+
+const float PQ_M1 = 2610.0 / 16384.0;
+const float PQ_M2 = 2523.0 / 4096.0 * 128.0;
+const float PQ_C1 = 3424.0 / 4096.0;
+const float PQ_C2 = 2413.0 / 4096.0 * 32.0;
+const float PQ_C3 = 2392.0 / 4096.0 * 32.0;
+
+// The exact inverse of the BT.709 -> BT.2020 matrix in the forward shader.
+const mat3 BT2020_TO_BT709 = mat3(
+    1.6604903, -0.1245500, -0.0181511,
+    -0.5876391, 1.1328999, -0.1005787,
+    -0.0728516, -0.0083480, 1.1187299
+);
+
+vec3 pq_decode(vec3 v) {
+    vec3 e = pow(clamp(v, 0.0, 1.0), vec3(1.0 / PQ_M2));
+    vec3 n = max(e - PQ_C1, 0.0) / max(PQ_C2 - PQ_C3 * e, 1e-6);
+    return pow(n, vec3(1.0 / PQ_M1));
+}
+
+vec3 linear_to_srgb(vec3 c) {
+    vec3 lo = c * 12.92;
+    vec3 hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+    return mix(lo, hi, step(vec3(0.0031308), c));
+}
+
+void main() {
+    vec3 pq = texture2D(tex, v_coords).rgb;
+
+    // PQ carries absolute luminance: decode to nits, then express it relative to
+    // the paper white the compositor encoded sRGB 1.0 at.
+    vec3 nits = pq_decode(pq) * 10000.0;
+    vec3 lin2020 = nits / REF_WHITE;
+    vec3 lin709 = BT2020_TO_BT709 * lin2020;
+    vec3 srgb = linear_to_srgb(clamp(lin709, 0.0, 1.0));
+
+    gl_FragColor = vec4(srgb * alpha, alpha);
+}
+"#;
+
+/// [`PQ_TO_SRGB_TEXTURE_SHADER_TEMPLATE`] with `ref_white` baked in.
+pub fn inverse_texture_shader(ref_white: f64) -> String {
+    PQ_TO_SRGB_TEXTURE_SHADER_TEMPLATE.replace(
+        SHADER_REF_WHITE_LINE,
+        &format!("const float REF_WHITE = {ref_white:.1};"),
+    )
+}
+
+/// The CPU twin of [`inverse_texture_shader`], for tests and diagnostics.
+pub fn pq_to_srgb(pq: [f64; 3], ref_white: f64) -> [f64; 3] {
+    const M1: f64 = 2610.0 / 16384.0;
+    const M2: f64 = 2523.0 / 4096.0 * 128.0;
+    const C1: f64 = 3424.0 / 4096.0;
+    const C2: f64 = 2413.0 / 4096.0 * 32.0;
+    const C3: f64 = 2392.0 / 4096.0 * 32.0;
+    const M: [[f64; 3]; 3] = [
+        [1.6604903, -0.5876391, -0.0728516],
+        [-0.1245500, 1.1328999, -0.0083480],
+        [-0.0181511, -0.1005787, 1.1187299],
+    ];
+
+    let decode = |v: f64| {
+        let e = v.clamp(0.0, 1.0).powf(1.0 / M2);
+        let n = (e - C1).max(0.0) / (C2 - C3 * e).max(1e-6);
+        n.powf(1.0 / M1) * 10_000.0
+    };
+
+    let nits = [decode(pq[0]), decode(pq[1]), decode(pq[2])];
+    let lin2020 = [
+        nits[0] / ref_white,
+        nits[1] / ref_white,
+        nits[2] / ref_white,
+    ];
+
+    let mut out = [0.0; 3];
+    for (i, row) in M.iter().enumerate() {
+        let lin = (row[0] * lin2020[0] + row[1] * lin2020[1] + row[2] * lin2020[2]).clamp(0.0, 1.0);
+        out[i] = if lin <= 0.0031308 {
+            lin * 12.92
+        } else {
+            1.055 * lin.powf(1.0 / 2.4) - 0.055
+        };
+    }
+    out
+}
+
+/// Converts premultiplied BGRA pixels from BT.2020/PQ to sRGB in place.
+///
+/// This is what a screencopy of an HDR output goes through: the composed frame is
+/// PQ, a capture client expects sRGB. `bytes` are in the layout
+/// `copy_framebuffer` produces for `Abgr8888`, which is what the wlr-screencopy
+/// clients get, so the channel order in memory is B, G, R, A.
+pub fn pq_bgra_to_srgb_in_place(bytes: &mut [u8], ref_white: f64) {
+    for px in bytes.chunks_exact_mut(4) {
+        let pq = [
+            px[2] as f64 / 255.0,
+            px[1] as f64 / 255.0,
+            px[0] as f64 / 255.0,
+        ];
+        let srgb = pq_to_srgb(pq, ref_white);
+        px[2] = (srgb[0] * 255.0).round().clamp(0.0, 255.0) as u8;
+        px[1] = (srgb[1] * 255.0).round().clamp(0.0, 255.0) as u8;
+        px[0] = (srgb[2] * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+}
+
 fn env_number(key: &str, default: f64, min: f64, max: f64) -> f64 {
     let Ok(value) = std::env::var(key) else {
         return default;
@@ -578,6 +713,58 @@ mod tests {
     fn close(got: f64, want: f64) {
         assert!((got - want).abs() < 1e-4, "got {got}, want {want}");
     }
+    #[test]
+    fn srgb_round_trips_through_pq() {
+        // The capture path is the inverse of the composition path; if these drift
+        // apart, screenshots of an HDR desktop stop matching the desktop.
+        for ref_white in [203.0, 450.0, 600.0] {
+            for value in [0.0, 0.02, 0.18, 0.5, 0.75, 1.0] {
+                let srgb = [value, value, value];
+                let pq = srgb_to_pq(srgb, ref_white);
+                let back = pq_to_srgb(pq, ref_white);
+                for channel in back {
+                    assert!(
+                        (channel - value).abs() < 5e-3,
+                        "ref_white {ref_white}, value {value}: got {channel}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bgra_conversion_round_trips_a_pixel() {
+        let ref_white = 450.0;
+        let srgb = [0.8, 0.25, 0.5];
+        let pq = srgb_to_pq(srgb, ref_white);
+        let mut bytes = [
+            (pq[2] * 255.0).round() as u8,
+            (pq[1] * 255.0).round() as u8,
+            (pq[0] * 255.0).round() as u8,
+            255,
+        ];
+        pq_bgra_to_srgb_in_place(&mut bytes, ref_white);
+        let got = [
+            bytes[2] as f64 / 255.0,
+            bytes[1] as f64 / 255.0,
+            bytes[0] as f64 / 255.0,
+        ];
+        for (got, want) in got.iter().zip(srgb) {
+            assert!(
+                (got - want).abs() < 6e-3,
+                "got {got}, want {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn pq_above_paper_white_clips() {
+        // 1000 nits of PQ on a 203-nit paper white has nowhere to go in sRGB.
+        let pq = srgb_to_pq([1.0, 1.0, 1.0], 1000.0);
+        let out = pq_to_srgb(pq, 203.0);
+        assert!(out.iter().all(|c| *c > 1.0 - 1e-3));
+    }
+
 
     #[test]
     fn golden_values_match_the_oracle() {
