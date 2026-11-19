@@ -80,7 +80,8 @@
             libinput
             mesa
             xwayland
-            libdisplay-info
+            # The libdisplay-info crate requires <0.4.0; nixpkgs unstable ships 0.4.0.
+            libdisplay-info_0_3
             libgbm
 
             # winit on x11
@@ -104,7 +105,7 @@
               lua5_4
               libinput
               libxkbcommon
-              libdisplay-info
+              libdisplay-info_0_3
               seatd
               libgbm
               udev
