@@ -367,9 +367,8 @@ impl output::v1::output_service_server::OutputService for super::OutputService {
             let mut config = output.with_state(|state| state.hdr);
 
             match hdr {
-                output::v1::Hdr::Unspecified => {
-                    return Err(Status::invalid_argument("hdr was unspecified"));
-                }
+                // Override-only requests leave the on/off state alone.
+                output::v1::Hdr::Unspecified => {}
                 output::v1::Hdr::Off => config.enabled = false,
                 output::v1::Hdr::On => config.enabled = true,
             }
