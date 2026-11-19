@@ -804,6 +804,8 @@ struct RenderSurface {
     /// Luminance 1.0 sRGB maps to on this output, in nits.
     /// Lazily compiled shader that converts sRGB content into the HDR signal.
     hdr_program: Option<GlesTexProgram>,
+    /// Lazily compiled shader that converts linear-light (scRGB) content into it.
+    hdr_linear_program: Option<GlesTexProgram>,
     /// One-shot / rate-limited pre-scanout frame dumps (`PINNACLE_HDR_DUMP`).
     hdr_dump: Option<crate::hdr::FrameDump>,
     /// Whether to log what the primary plane did (`PINNACLE_HDR_LOG`).
@@ -1186,6 +1188,7 @@ impl Udev {
             screencopy_commit_state: ScreencopyCommitState::default(),
             hdr,
             hdr_program: None,
+            hdr_linear_program: None,
             hdr_dump: crate::hdr::FrameDump::from_env(),
             hdr_log: crate::hdr::verbose(),
             hdr_scanout: None,
@@ -1631,11 +1634,23 @@ impl Udev {
         // signalled as SDR, instead of the cursor being placed for a passthrough
         // frame that no longer happens.
         if surface.hdr.enabled && surface.hdr_program.is_none() {
-            match renderer
+            // Both programs are compiled together: the frame converts sRGB and
+            // linear-light content side by side, and an output missing either one
+            // cannot be trusted with the pixels it would produce.
+            let compiled = renderer
                 .as_gles_renderer()
                 .compile_custom_texture_shader(surface.hdr.shader(), &[])
-            {
-                Ok(program) => surface.hdr_program = Some(program),
+                .and_then(|program| {
+                    renderer
+                        .as_gles_renderer()
+                        .compile_custom_texture_shader(&crate::hdr::linear_texture_shader(), &[])
+                        .map(|linear| (program, linear))
+                });
+            match compiled {
+                Ok((program, linear)) => {
+                    surface.hdr_program = Some(program);
+                    surface.hdr_linear_program = Some(linear);
+                }
                 Err(err) => {
                     // Nothing can be composited without the program, so the whole
                     // output goes back to SDR: the connector stops signalling PQ,
@@ -1787,9 +1802,10 @@ impl Udev {
             let signature = encoded.signature();
             if surface.hdr_encoded_signature.as_deref() != Some(&signature) {
                 info!(
-                    "{}: already encoded [{}] other descriptions [{}] no description [{}]",
+                    "{}: already encoded [{}] linear [{}] other descriptions [{}] no description [{}]",
                     output.name(),
                     encoded.marked.join(","),
+                    encoded.linear.join(","),
                     encoded.rejected.join(","),
                     encoded.undescribed.join(","),
                 );
@@ -1871,6 +1887,25 @@ impl Udev {
                 .as_gles_renderer()
                 .set_already_encoded_elements(already_encoded);
         }
+
+        // Linear-light (scRGB) surfaces get a conversion program of their own: the
+        // frame default assumes sRGB-encoded input, so running it over linear pixels
+        // would decode them a second time. Empty when the output is not in HDR, or
+        // when the program is missing because the compile failed above.
+        let linear_programs = match (
+            surface.hdr_linear_program.as_ref(),
+            encoded_surfaces.as_ref(),
+        ) {
+            (Some(program), Some(encoded)) => encoded
+                .linear_ids
+                .iter()
+                .map(|id| (id.clone(), program.clone()))
+                .collect(),
+            _ => Vec::new(),
+        };
+        renderer
+            .as_gles_renderer()
+            .set_element_tex_programs(linear_programs);
 
         if surface.hdr.enabled {
             // The program was compiled at the top of this function; a failure
@@ -1993,6 +2028,7 @@ impl Udev {
             gles.set_default_tex_program_override(None);
             gles.set_solid_color_transform(None);
             gles.set_already_encoded_elements(Vec::new());
+            gles.set_element_tex_programs(Vec::new());
         }
 
         let hdr_gate = hdr_passthrough;
@@ -2315,6 +2351,7 @@ impl Udev {
         // The program bakes in the paper white, so it is rebuilt with the new
         // configuration. The gate and signatures describe the previous state.
         surface.hdr_program = None;
+        surface.hdr_linear_program = None;
         surface.hdr_gate = None;
         surface.hdr_encoded_signature = None;
         surface.hdr_scanout = None;

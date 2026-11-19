@@ -660,18 +660,24 @@ struct CaptureHdr {
     /// Surfaces that are already in the output's encoding, so they must not be
     /// converted a second time.
     already_encoded: Vec<smithay::backend::renderer::element::Id>,
+    /// Surfaces whose pixels are linear light, so they need the linear program
+    /// rather than the sRGB one.
+    linear: Vec<smithay::backend::renderer::element::Id>,
 }
 
 impl State {
     /// The HDR encoding a capture of this output has to convert back from.
     fn capture_hdr_for_output(&self, output: &Output) -> Option<CaptureHdr> {
         let hdr = output.with_state(|state| state.hdr);
-        hdr.enabled.then(|| CaptureHdr {
-            reference_white: hdr.reference_white,
-            already_encoded: crate::hdr::EncodedSurfaces::for_windows(
+        hdr.enabled.then(|| {
+            let encoded = crate::hdr::EncodedSurfaces::for_windows(
                 self.pinnacle.space.elements_for_output(output),
-            )
-            .ids,
+            );
+            CaptureHdr {
+                reference_white: hdr.reference_white,
+                already_encoded: encoded.ids,
+                linear: encoded.linear_ids,
+            }
         })
     }
 
@@ -681,9 +687,13 @@ impl State {
         let hdr = window
             .output(&self.pinnacle)
             .map(|output| output.with_state(|state| state.hdr))?;
-        hdr.enabled.then(|| CaptureHdr {
-            reference_white: hdr.reference_white,
-            already_encoded: crate::hdr::EncodedSurfaces::for_windows([window]).ids,
+        hdr.enabled.then(|| {
+            let encoded = crate::hdr::EncodedSurfaces::for_windows([window]);
+            CaptureHdr {
+                reference_white: hdr.reference_white,
+                already_encoded: encoded.ids,
+                linear: encoded.linear_ids,
+            }
         })
     }
 }
@@ -774,7 +784,7 @@ fn render_hdr_capture(
     hdr: &CaptureHdr,
     program_cache: &mut Option<CapturePrograms>,
 ) -> anyhow::Result<()> {
-    let (forward, inverse) = capture_programs(renderer, hdr.reference_white, program_cache)?;
+    let (forward, linear, inverse) = capture_programs(renderer, hdr.reference_white, program_cache)?;
     let reference_white = hdr.reference_white;
 
     // The composed frame is a texture and not a renderbuffer: the dmabuf path
@@ -787,6 +797,12 @@ fn render_hdr_capture(
         crate::hdr::premultiplied_srgb_to_pq(color, reference_white)
     })));
     renderer.set_already_encoded_elements(hdr.already_encoded.clone());
+    renderer.set_element_tex_programs(
+        hdr.linear
+            .iter()
+            .map(|id| (id.clone(), linear.clone()))
+            .collect(),
+    );
 
     let rendered = {
         let mut offscreen_fb = renderer.bind(&mut offscreen)?;
@@ -879,6 +895,8 @@ pub struct CapturePrograms {
     reference_white: f64,
     /// sRGB to BT.2020/PQ, for the SDR elements of the composition.
     forward: GlesTexProgram,
+    /// Linear light to BT.2020/PQ, for scRGB elements of the composition.
+    linear: GlesTexProgram,
     /// BT.2020/PQ back to sRGB, for handing the composed frame to a client.
     inverse: GlesTexProgram,
 }
@@ -888,11 +906,15 @@ fn capture_programs(
     renderer: &mut GlesRenderer,
     reference_white: f64,
     cache: &mut Option<CapturePrograms>,
-) -> anyhow::Result<(GlesTexProgram, GlesTexProgram)> {
+) -> anyhow::Result<(GlesTexProgram, GlesTexProgram, GlesTexProgram)> {
     if let Some(programs) = cache.as_ref()
         && programs.reference_white == reference_white
     {
-        return Ok((programs.forward.clone(), programs.inverse.clone()));
+        return Ok((
+            programs.forward.clone(),
+            programs.linear.clone(),
+            programs.inverse.clone(),
+        ));
     }
 
     // Both are compiled together: a capture needs the forward one to compose and
@@ -900,16 +922,19 @@ fn capture_programs(
     // holds answers both.
     let forward =
         renderer.compile_custom_texture_shader(crate::hdr::texture_shader(reference_white), &[])?;
+    let linear =
+        renderer.compile_custom_texture_shader(crate::hdr::linear_texture_shader(), &[])?;
     let inverse = renderer
         .compile_custom_texture_shader(crate::hdr::inverse_texture_shader(reference_white), &[])?;
 
     *cache = Some(CapturePrograms {
         reference_white,
         forward: forward.clone(),
+        linear: linear.clone(),
         inverse: inverse.clone(),
     });
 
-    Ok((forward, inverse))
+    Ok((forward, linear, inverse))
 }
 
 impl Pinnacle {

@@ -8,7 +8,10 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use pinnacle::hdr::{inverse_texture_shader, pq_to_srgb, texture_shader};
+use pinnacle::hdr::{
+    inverse_texture_shader, linear_texture_shader, linear_to_pq, pq_to_srgb, srgb_to_pq,
+    texture_shader,
+};
 use smithay::{
     backend::{
         allocator::Fourcc,
@@ -117,6 +120,35 @@ fn import_pixel(renderer: &mut GlesRenderer, pixel: [u8; 4]) -> GlesTexture {
         .expect("import")
 }
 
+/// The linear path has to encode 0.18 as 14.4 nits, not the 5.5 the sRGB
+/// program would make of it. The readback is 8-bit PQ, so the tolerance is two
+/// codes; the gap between the two programs is more than ten, which is what makes
+/// this a discriminating test rather than a smoke test.
+#[test]
+fn linear_shader_encodes_scRGB_at_eighty_nits() {
+    let Some(mut renderer) = gles_renderer() else {
+        return;
+    };
+
+    let program = compile(&mut renderer, linear_texture_shader());
+    let source = import_pixel(&mut renderer, [46, 46, 46, 255]);
+    let out = render_through(&mut renderer, &program, &source);
+
+    let value = 46.0 / 255.0;
+    let expected = linear_to_pq([value; 3])[0];
+    let got = out[0] as f64 / 255.0;
+    assert!(
+        (got - expected).abs() <= 2.0 / 255.0,
+        "linear 0.18: got {got}, the CPU twin says {expected}"
+    );
+
+    let srgb = srgb_to_pq([value; 3], 203.0)[0];
+    assert!(
+        (got - srgb).abs() > 5.0 / 255.0,
+        "the linear program must not agree with the sRGB one: {got} vs {srgb}"
+    );
+}
+
 #[test]
 fn hdr_shaders_match_the_cpu_conversion() {
     let Some(mut renderer) = gles_renderer() else {
@@ -128,6 +160,7 @@ fn hdr_shaders_match_the_cpu_conversion() {
     compile(&mut renderer, texture_shader(400.0));
     compile(&mut renderer, inverse_texture_shader(203.0));
     compile(&mut renderer, inverse_texture_shader(400.0));
+    compile(&mut renderer, linear_texture_shader());
 
     // Opaque and translucent PQ, as the capture path hands them over.
     let cases: [(&str, [u8; 4], f32, f64); 3] = [

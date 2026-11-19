@@ -331,6 +331,35 @@ pub fn texture_shader(ref_white: f64) -> String {
     )
 }
 
+/// scRGB's reference: 1.0 in a linear-light buffer is 80 cd/m², up to 125.0 for
+/// 10 000 nits. It is a property of the encoding, not of the output.
+pub const SCRGB_REFERENCE_WHITE: f64 = 80.0;
+
+/// The line [`HDR_TEXTURE_SHADER_TEMPLATE`] uses to decode sRGB.
+const SHADER_SRGB_DECODE_LINE: &str = "    vec3 lin = srgb_to_linear(straight);";
+/// The line [`HDR_TEXTURE_SHADER_TEMPLATE`] uses to scale to nits.
+const SHADER_PQ_SCALE_LINE: &str = "    vec3 pq = pq_encode(lin2020 * REF_WHITE);";
+
+/// The same conversion for a surface whose pixels are already linear light.
+///
+/// The `ExtLinear` transfer function and the Windows-scRGB description both mean
+/// linear sRGB light with 1.0 at 80 nits, so the sRGB decode has to be skipped and
+/// the scale is the format's reference white rather than the output's paper white.
+/// Feeding linear pixels through the sRGB program decodes them a second time: 0.18
+/// lands at 5.5 nits instead of 14.4, and 1.0 at the paper white instead of 80.
+///
+/// Derived from the forward template so the PQ curve and the BT.709 to BT.2020
+/// matrix stay in one place; the substitutions are asserted in the tests, because a
+/// change to the template that misses one would silently produce an sRGB program.
+pub fn linear_texture_shader() -> String {
+    HDR_TEXTURE_SHADER_TEMPLATE
+        .replace(SHADER_SRGB_DECODE_LINE, "    vec3 lin = straight;")
+        .replace(
+            SHADER_PQ_SCALE_LINE,
+            &format!("    vec3 pq = pq_encode(lin2020 * {SCRGB_REFERENCE_WHITE:.1});"),
+        )
+}
+
 /// GLSL ES 1.00 shader template that converts an already-composed BT.2020/PQ
 /// frame back into sRGB.
 ///
@@ -582,6 +611,26 @@ pub fn srgb_to_pq(rgb: [f64; 3], ref_white: f64) -> [f64; 3] {
     ]
 }
 
+/// Linear-light sRGB in 0..1 (and above, for HDR headroom) to BT.2020 PQ code,
+/// with 1.0 = [`SCRGB_REFERENCE_WHITE`] nits. The twin of [`linear_texture_shader`].
+pub fn linear_to_pq(rgb: [f64; 3]) -> [f64; 3] {
+    const M: [[f64; 3]; 3] = [
+        [0.6274040, 0.3292820, 0.0433136],
+        [0.0690970, 0.9195400, 0.0113612],
+        [0.0163916, 0.0880132, 0.8955950],
+    ];
+    let lin2020 = [
+        M[0][0] * rgb[0] + M[0][1] * rgb[1] + M[0][2] * rgb[2],
+        M[1][0] * rgb[0] + M[1][1] * rgb[1] + M[1][2] * rgb[2],
+        M[2][0] * rgb[0] + M[2][1] * rgb[1] + M[2][2] * rgb[2],
+    ];
+    [
+        pq_encode_one(lin2020[0] * SCRGB_REFERENCE_WHITE),
+        pq_encode_one(lin2020[1] * SCRGB_REFERENCE_WHITE),
+        pq_encode_one(lin2020[2] * SCRGB_REFERENCE_WHITE),
+    ]
+}
+
 /// Convert a premultiplied sRGB colour into premultiplied BT.2020/PQ.
 ///
 /// Installed as the renderer's solid-colour transform, which covers
@@ -740,6 +789,15 @@ fn primaries_are_bt2020(values: Chromaticities) -> bool {
         && close(values.white, target.white)
 }
 
+/// Whether a description is linear light rather than an encoded transfer.
+///
+/// scRGB: the `ExtLinear` transfer function, or the pre-defined Windows-scRGB
+/// description, which is the same encoding under a different name. Such content
+/// needs [`linear_texture_shader`], not the sRGB one.
+pub fn description_is_linear(description: &ImageDescription) -> bool {
+    matches!(description.transfer, TransferFunction::ExtLinear) || description.windows_scrgb
+}
+
 /// Whether a client surface declares the encoding this output is driven with.
 pub fn surface_matches_output_encoding(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -806,8 +864,12 @@ pub fn surface_description_in_tree(
 pub struct EncodedSurfaces {
     /// Element ids for `GlesRenderer::set_already_encoded_elements`.
     pub ids: Vec<Id>,
+    /// Element ids for `GlesRenderer::set_element_tex_programs`, the linear ones.
+    pub linear_ids: Vec<Id>,
     /// `id:class` of every surface that is already encoded.
     pub marked: Vec<String>,
+    /// `id:class` of every surface that needs the linear-to-PQ program.
+    pub linear: Vec<String>,
     /// `id:class:description` of every surface that declares something else.
     pub rejected: Vec<String>,
     /// `class` or `id:class` of every surface that declares nothing.
@@ -877,8 +939,13 @@ impl EncodedSurfaces {
                 continue;
             };
             if !description_matches_output_encoding(&description) {
-                self.rejected
-                    .push(format!("{id}:{class}:{}", description_tag(&description)));
+                if description_is_linear(&description) {
+                    self.linear.push(format!("{id}:{class}"));
+                    self.linear_ids.push(Id::from_wayland_resource(surface));
+                } else {
+                    self.rejected
+                        .push(format!("{id}:{class}:{}", description_tag(&description)));
+                }
                 continue;
             }
             self.marked.push(format!("{id}:{class}"));
@@ -889,8 +956,9 @@ impl EncodedSurfaces {
     /// A signature of the three groups, so a repeat of the same set prints nothing.
     pub fn signature(&self) -> String {
         format!(
-            "{}|{}|{}",
+            "{}|{}|{}|{}",
             self.marked.join(","),
+            self.linear.join(","),
             self.rejected.join(","),
             self.undescribed.join(",")
         )
@@ -1148,6 +1216,51 @@ mod tests {
             values: None,
         };
         assert!(!description_matches_output_encoding(&srgb_pq));
+    }
+
+    /// The linear variant must be the forward template with exactly two changes:
+    /// no sRGB decode, and the scRGB reference instead of the paper white. A
+    /// template edit that leaves either in place would silently produce the sRGB
+    /// program and decode linear content twice.
+    #[test]
+    fn linear_shader_skips_the_srgb_decode() {
+        let linear = linear_texture_shader();
+        assert!(linear.contains("vec3 lin = straight;"));
+        assert!(!linear.contains("srgb_to_linear(straight)"));
+        assert!(linear.contains("lin2020 * 80.0"));
+        assert!(!linear.contains("pq_encode(lin2020 * REF_WHITE)"));
+
+        // Everything else is shared, so the two programs cannot drift apart.
+        for shared in ["BT709_TO_BT2020", "PQ_M1", "pq * color.a"] {
+            assert!(linear.contains(shared), "missing {shared}");
+            assert!(HDR_TEXTURE_SHADER_TEMPLATE.contains(shared));
+        }
+    }
+
+    /// 0.18 of a linear buffer is 14.4 nits, not the 5.5 the sRGB program would
+    /// make of it, and 1.0 is 80.
+    #[test]
+    fn linear_reference_maps_to_eighty_nits() {
+        close(linear_to_pq([0.18; 3])[1], pq_encode_one(14.4));
+        close(linear_to_pq([1.0; 3])[1], pq_encode_one(80.0));
+
+        // The sRGB program run over the same linear values is the defect this
+        // program exists for: darker in the shadows, brighter at white.
+        assert!(srgb_to_pq([0.18; 3], DEFAULT_REF_WHITE)[1] < linear_to_pq([0.18; 3])[1]);
+        assert!(srgb_to_pq([1.0; 3], DEFAULT_REF_WHITE)[1] > linear_to_pq([1.0; 3])[1]);
+    }
+
+    #[test]
+    fn scRGB_descriptions_are_linear() {
+        assert!(description_is_linear(&ImageDescription::WINDOWS_SCRGB));
+
+        let mut ext_linear = ImageDescription::SRGB;
+        ext_linear.transfer = TransferFunction::ExtLinear;
+        assert!(description_is_linear(&ext_linear));
+
+        assert!(!description_is_linear(&ImageDescription::SRGB));
+        assert!(!description_is_linear(&bt2020_pq_description()));
+        assert!(!description_is_linear(&ImageDescription::WINDOWS_BT2100));
     }
 
     #[test]
