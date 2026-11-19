@@ -56,6 +56,21 @@ pub const PROTOCOL_REFERENCE_WHITE: u32 = 203;
 /// HDR static metadata block, so it is a claim rather than a measurement.
 pub const DEFAULT_MAX_FALL: u32 = 400;
 
+/// Lowest and highest paper white accepted, in nits.
+///
+/// Below 80 the PQ code space under SDR white is crushed; above 1000 an encoded
+/// SDR white leaves a 1000-nit panel no highlight headroom at all.
+pub const REF_WHITE_MIN: u32 = 80;
+pub const REF_WHITE_MAX: u32 = 1000;
+
+/// Lowest and highest advertised peak accepted, in nits.
+pub const MAX_LUMINANCE_MIN: u32 = 100;
+pub const MAX_LUMINANCE_MAX: u32 = 4000;
+
+/// Lowest and highest advertised frame average accepted, in nits.
+pub const MAX_FALL_MIN: u32 = 1;
+pub const MAX_FALL_MAX: u32 = 10_000;
+
 /// Per-output HDR configuration.
 ///
 /// The compositor keeps one of these per output. It is set by the config client
@@ -103,11 +118,72 @@ impl HdrConfig {
     /// overriding it.
     pub fn apply_edid(&mut self, max_luminance: f32, max_fall: f32) {
         if std::env::var_os("PINNACLE_HDR_MAX_LUMINANCE").is_none() && max_luminance > 0.0 {
-            self.max_luminance = (max_luminance.round() as i64).clamp(100, 4000) as u16;
+            self.max_luminance = (max_luminance.round() as i64)
+                .clamp(MAX_LUMINANCE_MIN as i64, MAX_LUMINANCE_MAX as i64)
+                as u16;
         }
         if std::env::var_os("PINNACLE_HDR_DESC_MAX_FALL").is_none() && max_fall > 0.0 {
-            self.max_fall = (max_fall.round() as i64).clamp(1, 4000) as u16;
+            self.max_fall = (max_fall.round() as i64).clamp(MAX_FALL_MIN as i64, MAX_FALL_MAX as i64)
+                as u16;
         }
+        self.raise_peak_to_paper_white();
+    }
+
+    /// Keeps the advertised peak at or above the paper white.
+    ///
+    /// A peak under the SDR white claims the panel can show less than the desktop
+    /// already uses, which asks it to tone map content that is not meant to be
+    /// mapped.
+    fn raise_peak_to_paper_white(&mut self) {
+        let floor = self.reference_white.round().clamp(0.0, u16::MAX as f64) as u16;
+        self.max_luminance = self.max_luminance.max(floor);
+    }
+
+    /// Applies luminance overrides in nits, clamped to the accepted ranges.
+    ///
+    /// The protocol carries `u32` while the configuration stores `u16`, so values
+    /// are clamped *before* the conversion: a large value would otherwise wrap into
+    /// a small one. The advertised peak is raised to the paper white when it would
+    /// sit under it, which is the same invariant [`max_luminance`] enforces.
+    ///
+    /// Returns the fields that had to be adjusted, for the caller to log.
+    pub fn apply_luminance_overrides(
+        &mut self,
+        reference_white: Option<u32>,
+        max_luminance: Option<u32>,
+        max_fall: Option<u32>,
+    ) -> Vec<&'static str> {
+        let mut adjusted = Vec::new();
+
+        if let Some(nits) = reference_white {
+            let clamped = nits.clamp(REF_WHITE_MIN, REF_WHITE_MAX);
+            if clamped != nits {
+                adjusted.push("reference_white");
+            }
+            self.reference_white = f64::from(clamped);
+        }
+        if let Some(nits) = max_luminance {
+            let clamped = nits.clamp(MAX_LUMINANCE_MIN, MAX_LUMINANCE_MAX);
+            if clamped != nits {
+                adjusted.push("max_luminance");
+            }
+            self.max_luminance = clamped as u16;
+        }
+        if let Some(nits) = max_fall {
+            let clamped = nits.clamp(MAX_FALL_MIN, MAX_FALL_MAX);
+            if clamped != nits {
+                adjusted.push("max_fall");
+            }
+            self.max_fall = clamped as u16;
+        }
+
+        let before = self.max_luminance;
+        self.raise_peak_to_paper_white();
+        if self.max_luminance != before {
+            adjusted.push("max_luminance (raised to the paper white)");
+        }
+
+        adjusted
     }
 
     /// The image description this output advertises to clients.
@@ -122,11 +198,7 @@ impl HdrConfig {
             max_fall: Some(self.max_fall as u32),
             mastering_luminance: Some((50, self.max_luminance as u32)),
             mastering_primaries: None,
-            luminances: Some((
-                50,
-                self.max_luminance as u32,
-                protocol_reference_white(),
-            )),
+            luminances: Some((50, self.max_luminance as u32, protocol_reference_white())),
             windows_scrgb: false,
             windows_bt2100: false,
         }
@@ -156,7 +228,13 @@ pub fn protocol_reference_white() -> u32 {
 
 /// Full-frame average peak the output description reports, in nits.
 pub fn max_fall() -> u32 {
-    env_number("PINNACLE_HDR_DESC_MAX_FALL", DEFAULT_MAX_FALL as f64, 1.0, 10_000.0).round() as u32
+    env_number(
+        "PINNACLE_HDR_DESC_MAX_FALL",
+        DEFAULT_MAX_FALL as f64,
+        MAX_FALL_MIN as f64,
+        MAX_FALL_MAX as f64,
+    )
+    .round() as u32
 }
 
 /// The line [`texture_shader`] rewrites to bake in the reference white.
@@ -431,7 +509,12 @@ fn env_u64(key: &str, default: u64) -> u64 {
 /// `PINNACLE_HDR_REF_WHITE` overrides it; the value is clamped to 80..=1000 nits,
 /// the range where a PQ-encoded SDR white still leaves highlight headroom.
 pub fn ref_white() -> f64 {
-    env_number("PINNACLE_HDR_REF_WHITE", DEFAULT_REF_WHITE, 80.0, 1000.0)
+    env_number(
+        "PINNACLE_HDR_REF_WHITE",
+        DEFAULT_REF_WHITE,
+        REF_WHITE_MIN as f64,
+        REF_WHITE_MAX as f64,
+    )
 }
 
 /// Peak luminance advertised to the connector in the HDR metadata, in nits.
@@ -443,8 +526,8 @@ pub fn max_luminance() -> u16 {
     let nits = env_number(
         "PINNACLE_HDR_MAX_LUMINANCE",
         DEFAULT_MAX_LUMINANCE as f64,
-        100.0,
-        4000.0,
+        MAX_LUMINANCE_MIN as f64,
+        MAX_LUMINANCE_MAX as f64,
     );
     (nits.round() as u16).max(ref_white().round() as u16)
 }
@@ -643,9 +726,7 @@ pub fn description_matches_output_encoding(description: &ImageDescription) -> bo
 /// coordinates the protocol uses.
 fn primaries_are_bt2020(values: Chromaticities) -> bool {
     let target = Chromaticities::from_named(Primaries::Bt2020);
-    let close = |a: (i32, i32), b: (i32, i32)| {
-        (a.0 - b.0).abs() <= 500 && (a.1 - b.1).abs() <= 500
-    };
+    let close = |a: (i32, i32), b: (i32, i32)| (a.0 - b.0).abs() <= 500 && (a.1 - b.1).abs() <= 500;
     close(values.red, target.red)
         && close(values.green, target.green)
         && close(values.blue, target.blue)
@@ -844,10 +925,7 @@ mod tests {
             bytes[0] as f64 / 255.0,
         ];
         for (got, want) in got.iter().zip(srgb) {
-            assert!(
-                (got - want).abs() < 6e-3,
-                "got {got}, want {want}"
-            );
+            assert!((got - want).abs() < 6e-3, "got {got}, want {want}");
         }
     }
 
@@ -886,13 +964,54 @@ mod tests {
     }
 
     #[test]
+    fn luminance_overrides_are_clamped_before_the_u16_conversion() {
+        // The protocol carries u32 nits; 70000 used to wrap into 4464 and 65536
+        // into 0, which is an invalid piece of HDR metadata.
+        let mut config = HdrConfig::OFF;
+        let adjusted = config.apply_luminance_overrides(Some(0), Some(70_000), Some(65_536));
+        assert_eq!(config.reference_white, f64::from(REF_WHITE_MIN));
+        assert_eq!(config.max_luminance, MAX_LUMINANCE_MAX as u16);
+        assert_eq!(config.max_fall, MAX_FALL_MAX as u16);
+        assert_eq!(
+            adjusted,
+            vec!["reference_white", "max_luminance", "max_fall"]
+        );
+
+        let mut config = HdrConfig::OFF;
+        let adjusted = config.apply_luminance_overrides(Some(400), Some(300), None);
+        assert_eq!(config.reference_white, 400.0);
+        assert_eq!(config.max_luminance, 400, "peak raised to the paper white");
+        assert_eq!(adjusted, vec!["max_luminance (raised to the paper white)"]);
+    }
+
+    #[test]
+    fn luminance_overrides_in_range_report_nothing() {
+        let mut config = HdrConfig::OFF;
+        let adjusted = config.apply_luminance_overrides(Some(203), Some(1000), Some(400));
+        assert!(adjusted.is_empty());
+        assert_eq!(config.reference_white, 203.0);
+        assert_eq!(config.max_luminance, 1000);
+        assert_eq!(config.max_fall, 400);
+    }
+
+    #[test]
+    fn edid_peak_is_raised_above_the_paper_white() {
+        // A panel claiming a 100-nit peak cannot also advertise a 450-nit SDR
+        // white; the peak has to follow the white.
+        let mut config = HdrConfig::OFF;
+        config.reference_white = 450.0;
+        config.apply_edid(100.0, 80.0);
+        assert_eq!(config.max_luminance, 450);
+        assert_eq!(config.max_fall, 80);
+    }
+
+    #[test]
     fn pq_above_paper_white_clips() {
         // 1000 nits of PQ on a 203-nit paper white has nowhere to go in sRGB.
         let pq = srgb_to_pq([1.0, 1.0, 1.0], 1000.0);
         let out = pq_to_srgb(pq, 203.0);
         assert!(out.iter().all(|c| *c > 1.0 - 1e-3));
     }
-
 
     #[test]
     fn golden_values_match_the_oracle() {
@@ -937,7 +1056,9 @@ mod tests {
     fn only_pq_bt2020_counts_as_already_encoded() {
         let pq_2020 = bt2020_pq_description();
         assert!(description_matches_output_encoding(&pq_2020));
-        assert!(description_matches_output_encoding(&ImageDescription::WINDOWS_BT2100));
+        assert!(description_matches_output_encoding(
+            &ImageDescription::WINDOWS_BT2100
+        ));
 
         let mut pq_srgb = pq_2020;
         pq_srgb.primaries = PrimariesOption {
@@ -962,8 +1083,12 @@ mod tests {
         };
         assert!(!description_matches_output_encoding(&pq_raw_p3));
 
-        assert!(!description_matches_output_encoding(&ImageDescription::SRGB));
-        assert!(!description_matches_output_encoding(&ImageDescription::WINDOWS_SCRGB));
+        assert!(!description_matches_output_encoding(
+            &ImageDescription::SRGB
+        ));
+        assert!(!description_matches_output_encoding(
+            &ImageDescription::WINDOWS_SCRGB
+        ));
 
         // HLG is HDR, but it is not the encoding the connector is driven with, so
         // its pixels still need converting.
@@ -1010,7 +1135,10 @@ mod tests {
             at_400.replace("400.0;", "203.0;"),
             HDR_TEXTURE_SHADER_TEMPLATE
         );
-        assert_eq!(texture_shader(DEFAULT_REF_WHITE), HDR_TEXTURE_SHADER_TEMPLATE);
+        assert_eq!(
+            texture_shader(DEFAULT_REF_WHITE),
+            HDR_TEXTURE_SHADER_TEMPLATE
+        );
         // The one line Smithay requires to substitute its own defines.
         assert!(at_400.lines().any(|line| line.trim() == "//_DEFINES_"));
     }
@@ -1026,7 +1154,10 @@ mod tests {
         };
         assert!(!dump.poll());
         assert!(dump.poll());
-        assert_eq!(dump.path_for("DP-2"), PathBuf::from("/tmp/hdr/DP-2-hdr.ppm"));
+        assert_eq!(
+            dump.path_for("DP-2"),
+            PathBuf::from("/tmp/hdr/DP-2-hdr.ppm")
+        );
         for _ in 0..100 {
             assert!(!dump.poll());
         }

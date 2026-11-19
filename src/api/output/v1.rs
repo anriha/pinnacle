@@ -4,14 +4,14 @@ use pinnacle_api_defs::pinnacle::{
         v1::{
             FocusRequest, FocusResponse, GetEnabledRequest, GetEnabledResponse,
             GetFocusStackWindowIdsRequest, GetFocusStackWindowIdsResponse, GetFocusedRequest,
-            GetFocusedResponse, GetHdrRequest, GetHdrResponse, GetInfoRequest, GetInfoResponse, GetLocRequest, GetLocResponse,
-            GetLogicalSizeRequest, GetLogicalSizeResponse, GetModesRequest, GetModesResponse,
-            GetOutputsInDirRequest, GetOutputsInDirResponse, GetPhysicalSizeRequest,
-            GetPhysicalSizeResponse, GetPoweredRequest, GetPoweredResponse, GetRequest,
-            GetResponse, GetScaleRequest, GetScaleResponse, GetTagIdsRequest, GetTagIdsResponse,
-            GetTransformRequest, GetTransformResponse, SetLocRequest, SetModeRequest,
-            SetHdrRequest, SetHdrResponse, SetModelineRequest, SetPoweredRequest, SetScaleRequest,
-            SetTransformRequest, SetVrrRequest, SetVrrResponse,
+            GetFocusedResponse, GetHdrRequest, GetHdrResponse, GetInfoRequest, GetInfoResponse,
+            GetLocRequest, GetLocResponse, GetLogicalSizeRequest, GetLogicalSizeResponse,
+            GetModesRequest, GetModesResponse, GetOutputsInDirRequest, GetOutputsInDirResponse,
+            GetPhysicalSizeRequest, GetPhysicalSizeResponse, GetPoweredRequest, GetPoweredResponse,
+            GetRequest, GetResponse, GetScaleRequest, GetScaleResponse, GetTagIdsRequest,
+            GetTagIdsResponse, GetTransformRequest, GetTransformResponse, SetHdrRequest,
+            SetHdrResponse, SetLocRequest, SetModeRequest, SetModelineRequest, SetPoweredRequest,
+            SetScaleRequest, SetTransformRequest, SetVrrRequest, SetVrrResponse,
         },
     },
     util::{
@@ -373,14 +373,20 @@ impl output::v1::output_service_server::OutputService for super::OutputService {
                 output::v1::Hdr::On => config.enabled = true,
             }
 
-            if let Some(nits) = request.reference_white_nits {
-                config.reference_white = nits as f64;
-            }
-            if let Some(nits) = request.max_luminance_nits {
-                config.max_luminance = nits as u16;
-            }
-            if let Some(nits) = request.max_fall_nits {
-                config.max_fall = nits as u16;
+            // The proto carries `u32` nits while the configuration stores `u16`,
+            // so the values are clamped before the conversion; an unclamped cast
+            // wraps 70000 into 4464 and 65536 into 0.
+            let adjusted = config.apply_luminance_overrides(
+                request.reference_white_nits,
+                request.max_luminance_nits,
+                request.max_fall_nits,
+            );
+            if !adjusted.is_empty() {
+                warn!(
+                    "SetHdr on {}: clamped {} to the supported range",
+                    output.name(),
+                    adjusted.join(", ")
+                );
             }
 
             if let Err(err) = state.set_output_hdr(&output, config) {
