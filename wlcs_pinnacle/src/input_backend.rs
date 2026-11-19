@@ -3,7 +3,7 @@ use core::hash::Hash;
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, ButtonState, Device, DeviceCapability, Event, InputBackend,
-        InputEvent, PointerButtonEvent, PointerMotionAbsoluteEvent, PointerMotionEvent,
+        InputEvent, InputTime, PointerButtonEvent, PointerMotionAbsoluteEvent, PointerMotionEvent,
         TouchDownEvent, TouchEvent, TouchMotionEvent, TouchSlot, TouchUpEvent, UnusedEvent,
     },
     utils::{Logical, Point},
@@ -87,8 +87,8 @@ impl From<WlcsPointerButtonEvent> for InputEvent<WlcsInputBackend> {
 }
 
 impl Event<WlcsInputBackend> for WlcsPointerButtonEvent {
-    fn time(&self) -> u64 {
-        self.time
+    fn time(&self) -> InputTime {
+        InputTime::from_micros(self.time)
     }
 
     fn device(&self) -> <WlcsInputBackend as InputBackend>::Device {
@@ -122,8 +122,8 @@ impl From<WlcsPointerMotionEvent> for InputEvent<WlcsInputBackend> {
 }
 
 impl Event<WlcsInputBackend> for WlcsPointerMotionEvent {
-    fn time(&self) -> u64 {
-        self.time
+    fn time(&self) -> InputTime {
+        InputTime::from_micros(self.time)
     }
 
     fn device(&self) -> <WlcsInputBackend as InputBackend>::Device {
@@ -165,8 +165,8 @@ impl From<WlcsPointerMotionAbsoluteEvent> for InputEvent<WlcsInputBackend> {
 }
 
 impl Event<WlcsInputBackend> for WlcsPointerMotionAbsoluteEvent {
-    fn time(&self) -> u64 {
-        self.time
+    fn time(&self) -> InputTime {
+        InputTime::from_micros(self.time)
     }
 
     fn device(&self) -> <WlcsInputBackend as InputBackend>::Device {
@@ -210,8 +210,8 @@ impl From<WlcsTouchDownEvent> for InputEvent<WlcsInputBackend> {
 }
 
 impl Event<WlcsInputBackend> for WlcsTouchDownEvent {
-    fn time(&self) -> u64 {
-        self.time
+    fn time(&self) -> InputTime {
+        InputTime::from_micros(self.time)
     }
 
     fn device(&self) -> <WlcsInputBackend as InputBackend>::Device {
@@ -260,8 +260,8 @@ impl From<WlcsTouchUpEvent> for InputEvent<WlcsInputBackend> {
 }
 
 impl Event<WlcsInputBackend> for WlcsTouchUpEvent {
-    fn time(&self) -> u64 {
-        self.time
+    fn time(&self) -> InputTime {
+        InputTime::from_micros(self.time)
     }
 
     fn device(&self) -> <WlcsInputBackend as InputBackend>::Device {
@@ -293,8 +293,8 @@ impl From<WlcsTouchMotionEvent> for InputEvent<WlcsInputBackend> {
 }
 
 impl Event<WlcsInputBackend> for WlcsTouchMotionEvent {
-    fn time(&self) -> u64 {
-        self.time
+    fn time(&self) -> InputTime {
+        InputTime::from_micros(self.time)
     }
 
     fn device(&self) -> <WlcsInputBackend as InputBackend>::Device {

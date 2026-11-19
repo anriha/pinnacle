@@ -124,6 +124,9 @@
           )}";
           shellHook = ''
             export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$NIX_LD_LIBRARY_PATH"
+            # `just wlcs` configures wlcs with CMake, which looks for an
+            # unprefixed C/C++ compiler that a nix shell does not provide.
+            export CC=clang CXX=clang++
           '';
         };
       }
