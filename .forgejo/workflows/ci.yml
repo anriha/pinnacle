@@ -35,7 +35,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install nix
-        uses: cachix/install-nix-action@v31
+        # Fully qualified: a relative `owner/repo@ref` is prefixed with the
+        # instance's DEFAULT_ACTIONS_URL (data.forgejo.org here), which does not
+        # mirror this action.
+        uses: https://github.com/cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
@@ -60,7 +63,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install nix
-        uses: cachix/install-nix-action@v31
+        # Fully qualified: a relative `owner/repo@ref` is prefixed with the
+        # instance's DEFAULT_ACTIONS_URL (data.forgejo.org here), which does not
+        # mirror this action.
+        uses: https://github.com/cachix/install-nix-action@v31
         with:
           extra_nix_config: |
             experimental-features = nix-command flakes
