@@ -298,6 +298,8 @@ pub struct ConnectorSavedState {
     pub scale: Option<smithay::output::Scale>,
     /// The output's previous powered state
     pub powered: Option<bool>,
+    /// The output's previous HDR configuration
+    pub hdr: Option<crate::hdr::HdrConfig>,
     // TODO: transform
 }
 

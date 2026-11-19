@@ -50,6 +50,88 @@ pub const PROTOCOL_REFERENCE_WHITE: u32 = 203;
 /// HDR static metadata block, so it is a claim rather than a measurement.
 pub const DEFAULT_MAX_FALL: u32 = 400;
 
+/// Per-output HDR configuration.
+///
+/// The compositor keeps one of these per output. It is set by the config client
+/// through the `output` API (`OutputHandle::set_hdr`), and initialised from the
+/// environment at output creation so the pre-API launcher keeps working.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HdrConfig {
+    /// Whether the output is driven in BT.2020/PQ.
+    pub enabled: bool,
+    /// Where this compositor maps SDR white when it encodes content into PQ, nits.
+    pub reference_white: f64,
+    /// Peak luminance advertised to the connector, nits.
+    pub max_luminance: u16,
+    /// Full-frame average peak advertised to the connector, nits.
+    pub max_fall: u16,
+}
+
+impl HdrConfig {
+    /// HDR off, with the default values an `Off` output carries so that
+    /// turning it back on does not need the caller to resupply them.
+    pub const OFF: HdrConfig = HdrConfig {
+        enabled: false,
+        reference_white: DEFAULT_REF_WHITE,
+        max_luminance: DEFAULT_MAX_LUMINANCE,
+        max_fall: DEFAULT_MAX_FALL as u16,
+    };
+
+    /// The configuration an output starts with, read from the environment.
+    pub fn from_env(output: &Output) -> Self {
+        if !hdr_requested_for(output) {
+            return Self::OFF;
+        }
+        Self {
+            enabled: true,
+            reference_white: ref_white(),
+            max_luminance: max_luminance(),
+            max_fall: max_fall() as u16,
+        }
+    }
+
+    /// Fills the luminance fields from the EDID's HDR static metadata block.
+    ///
+    /// Only applied where the environment did not set an explicit value: the
+    /// EDID is the panel's own claim, the environment is the operator
+    /// overriding it.
+    pub fn apply_edid(&mut self, max_luminance: f32, max_fall: f32) {
+        if std::env::var_os("PINNACLE_HDR_MAX_LUMINANCE").is_none() && max_luminance > 0.0 {
+            self.max_luminance = (max_luminance.round() as i64).clamp(100, 4000) as u16;
+        }
+        if std::env::var_os("PINNACLE_HDR_DESC_MAX_FALL").is_none() && max_fall > 0.0 {
+            self.max_fall = (max_fall.round() as i64).clamp(1, 4000) as u16;
+        }
+    }
+
+    /// The image description this output advertises to clients.
+    pub fn description(&self) -> ImageDescription {
+        ImageDescription {
+            transfer: TransferFunction::St2084Pq,
+            primaries: PrimariesOption {
+                named: Some(Primaries::Bt2020),
+                values: None,
+            },
+            max_cll: Some(self.max_luminance as u32),
+            max_fall: Some(self.max_fall as u32),
+            mastering_luminance: Some((50, self.max_luminance as u32)),
+            mastering_primaries: None,
+            luminances: Some((
+                50,
+                self.max_luminance as u32,
+                protocol_reference_white(),
+            )),
+            windows_scrgb: false,
+            windows_bt2100: false,
+        }
+    }
+
+    /// The texture program that converts sRGB elements for this configuration.
+    pub fn shader(&self) -> String {
+        texture_shader(self.reference_white)
+    }
+}
+
 /// Reference white the output description reports, in nits.
 ///
 /// Separate from [`ref_white`]: that one decides where *this compositor* puts SDR
@@ -281,22 +363,17 @@ pub fn premultiplied_srgb_to_pq(color: Color32F, ref_white: f64) -> Color32F {
     )
 }
 
-/// The image description of an HDR output we drive in BT.2020/PQ mode.
+/// The image description of an HDR output we drive in BT.2020/PQ mode, using
+/// the environment's values. Outputs carry their own [`HdrConfig`]; this is for
+/// the paths that have no output at hand (tests, diagnostics).
 pub fn bt2020_pq_description() -> ImageDescription {
-    ImageDescription {
-        transfer: TransferFunction::St2084Pq,
-        primaries: PrimariesOption {
-            named: Some(Primaries::Bt2020),
-            values: None,
-        },
-        max_cll: Some(max_luminance() as u32),
-        max_fall: Some(max_fall()),
-        mastering_luminance: Some((50, max_luminance() as u32)),
-        mastering_primaries: None,
-        luminances: Some((50, max_luminance() as u32, protocol_reference_white())),
-        windows_scrgb: false,
-        windows_bt2100: false,
+    HdrConfig {
+        enabled: true,
+        reference_white: ref_white(),
+        max_luminance: max_luminance(),
+        max_fall: max_fall() as u16,
     }
+    .description()
 }
 
 /// The file whose existence requests one dump right now.
@@ -472,7 +549,7 @@ pub fn surface_description_in_tree(
     None
 }
 
-/// Whether HDR output was requested for this output by the environment./// Whether HDR output was requested for this output by the environment./// Whether HDR output was requested for this output by the environment.
+/// Whether HDR output was requested for this output by the environment.
 ///
 /// `PINNACLE_HDR` unset or empty disables HDR. `PINNACLE_HDR=1` enables every
 /// output that supports the connector properties; a comma-separated list of

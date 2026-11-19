@@ -263,6 +263,32 @@ impl Drop for Pinnacle {
 }
 
 impl State {
+    /// Applies an HDR configuration to an output.
+    ///
+    /// Stages the connector colour state, then re-announces the surface
+    /// descriptions and schedules a redraw, so a change from the config client
+    /// takes effect without a restart. On failure the output stays in SDR
+    /// signalling and its clients are told so.
+    pub fn set_output_hdr(
+        &mut self,
+        output: &Output,
+        mut config: crate::hdr::HdrConfig,
+    ) -> Result<(), String> {
+        if let Err(err) = self.backend.set_output_hdr(output, config) {
+            if config.enabled {
+                config.enabled = false;
+                output.with_state_mut(|state| state.hdr = config);
+                self.pinnacle.update_preferred_descriptions(output);
+            }
+            return Err(err);
+        }
+
+        output.with_state_mut(|state| state.hdr = config);
+        self.pinnacle.update_preferred_descriptions(output);
+        self.schedule_render(output);
+        Ok(())
+    }
+
     pub fn on_event_loop_cycle_completion(&mut self) {
         let _span = tracy_client::span!("State::on_event_loop_cycle_completion");
 
@@ -337,8 +363,8 @@ impl Pinnacle {
     pub fn update_preferred_descriptions(&mut self, output: &Output) {
         use smithay::wayland::color::management::ImageDescription;
 
-        let description = if crate::hdr::hdr_requested_for(output) {
-            crate::hdr::bt2020_pq_description()
+        let description = if output.with_state(|state| state.hdr.enabled) {
+            output.with_state(|state| state.hdr).description()
         } else {
             ImageDescription::SRGB
         };

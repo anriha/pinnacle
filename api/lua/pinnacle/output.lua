@@ -603,6 +603,56 @@ function OutputHandle:set_vrr(vrr)
     end
 end
 
+---Sets the HDR state of this output.
+---
+---Turning HDR on drives the connector in BT.2020/PQ, advertises a PQ image
+---description to clients and converts SDR content into that space. The change
+---takes effect immediately.
+---
+---The paper white and peak luminance keep their current values unless given.
+---
+---@param hdr boolean Whether the output should be in HDR mode.
+---@param opts? { reference_white: integer?, max_luminance: integer?, max_fall: integer? } Luminance overrides in nits.
+function OutputHandle:set_hdr(hdr, opts)
+    opts = opts or {}
+
+    local hdr_msg = hdr and output_v1.Hdr.HDR_ON or output_v1.Hdr.HDR_OFF
+
+    local _, err = client:pinnacle_output_v1_OutputService_SetHdr({
+        output_name = self.name,
+        hdr = hdr_msg,
+        reference_white_nits = opts.reference_white,
+        max_luminance_nits = opts.max_luminance,
+        max_fall_nits = opts.max_fall,
+    })
+
+    if err then
+        log.error(err)
+    end
+end
+
+---Gets this output's HDR configuration.
+---
+---@return { enabled: boolean, supported: boolean, reference_white: integer, max_luminance: integer, max_fall: integer }
+function OutputHandle:get_hdr()
+    local response, err = client:pinnacle_output_v1_OutputService_GetHdr({
+        output_name = self.name,
+    })
+
+    if err then
+        log.error(err)
+        return nil
+    end
+
+    return {
+        enabled = response.hdr == output_v1.Hdr.HDR_ON,
+        supported = response.supported,
+        reference_white = response.reference_white_nits,
+        max_luminance = response.max_luminance_nits,
+        max_fall = response.max_fall_nits,
+    }
+end
+
 ---Focuses this output.
 function OutputHandle:focus()
     local _, err = client:pinnacle_output_v1_OutputService_Focus({

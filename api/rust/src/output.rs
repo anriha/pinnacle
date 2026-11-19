@@ -16,11 +16,11 @@ use pinnacle_api_defs::pinnacle::{
         self,
         v1::{
             FocusRequest, GetEnabledRequest, GetFocusStackWindowIdsRequest, GetFocusedRequest,
-            GetInfoRequest, GetLocRequest, GetLogicalSizeRequest, GetModesRequest,
+            GetHdrRequest, GetInfoRequest, GetLocRequest, GetLogicalSizeRequest, GetModesRequest,
             GetOutputsInDirRequest, GetPhysicalSizeRequest, GetPoweredRequest, GetRequest,
-            GetScaleRequest, GetTagIdsRequest, GetTransformRequest, SetLocRequest, SetModeRequest,
-            SetModelineRequest, SetPoweredRequest, SetScaleRequest, SetTransformRequest,
-            SetVrrRequest,
+            GetScaleRequest, GetTagIdsRequest, GetTransformRequest, SetHdrRequest, SetLocRequest,
+            SetModeRequest, SetModelineRequest, SetPoweredRequest, SetScaleRequest,
+            SetTransformRequest, SetVrrRequest,
         },
     },
     util::v1::{AbsOrRel, SetOrToggle},
@@ -274,6 +274,31 @@ pub enum Vrr {
     /// Variable refresh rate should be on when a window with an
     /// active [`VrrDemand`](crate::window::VrrDemand) is visible.
     OnDemand,
+}
+
+/// The HDR state of an output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Hdr {
+    /// The output signals SDR.
+    #[default]
+    Off,
+    /// The output is driven in BT.2020/PQ.
+    On,
+}
+
+/// What an output reports about its HDR configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HdrInfo {
+    /// Whether the output is currently driven in BT.2020/PQ.
+    pub enabled: bool,
+    /// Whether the connector can be driven in HDR at all.
+    pub supported: bool,
+    /// The paper white the compositor maps SDR content to, in nits.
+    pub reference_white: u32,
+    /// The peak luminance advertised to the connector, in nits.
+    pub max_luminance: u32,
+    /// The full-frame average peak advertised to the connector, in nits.
+    pub max_fall: u32,
 }
 
 impl OutputHandle {
@@ -641,6 +666,92 @@ impl OutputHandle {
             })
             .block_on_tokio()
             .unwrap();
+    }
+
+    /// Sets the HDR state of this output.
+    ///
+    /// Turning HDR on drives the connector in BT.2020/PQ, advertises a PQ image
+    /// description to clients and converts SDR content into that space. The
+    /// change takes effect immediately.
+    ///
+    /// The paper white and peak luminance keep their current values; use
+    /// [`set_hdr_reference_white`](Self::set_hdr_reference_white) and
+    /// [`set_hdr_max_luminance`](Self::set_hdr_max_luminance) to change them.
+    pub fn set_hdr(&self, hdr: Hdr) {
+        let hdr = match hdr {
+            Hdr::Off => output::v1::Hdr::Off,
+            Hdr::On => output::v1::Hdr::On,
+        };
+
+        Client::output()
+            .set_hdr(SetHdrRequest {
+                output_name: self.name(),
+                hdr: hdr as i32,
+                reference_white_nits: None,
+                max_luminance_nits: None,
+                max_fall_nits: None,
+            })
+            .block_on_tokio()
+            .unwrap();
+    }
+
+    /// Sets the luminance SDR content is mapped to when this output is in HDR
+    /// mode, in nits.
+    ///
+    /// 203 is BT.2408's reference white. Raise it if HDR-mode SDR content looks
+    /// dimmer than the same content in SDR mode.
+    pub fn set_hdr_reference_white(&self, nits: u32) {
+        Client::output()
+            .set_hdr(SetHdrRequest {
+                output_name: self.name(),
+                hdr: output::v1::Hdr::Unspecified as i32,
+                reference_white_nits: Some(nits),
+                max_luminance_nits: None,
+                max_fall_nits: None,
+            })
+            .block_on_tokio()
+            .unwrap();
+    }
+
+    /// Sets the peak luminance advertised to this output's connector, in nits.
+    ///
+    /// Use this when the EDID-reported peak is wrong for the panel's current
+    /// picture mode.
+    pub fn set_hdr_max_luminance(&self, nits: u32) {
+        Client::output()
+            .set_hdr(SetHdrRequest {
+                output_name: self.name(),
+                hdr: output::v1::Hdr::Unspecified as i32,
+                reference_white_nits: None,
+                max_luminance_nits: Some(nits),
+                max_fall_nits: None,
+            })
+            .block_on_tokio()
+            .unwrap();
+    }
+
+    /// Gets this output's HDR configuration.
+    pub fn hdr(&self) -> HdrInfo {
+        self.hdr_async().block_on_tokio()
+    }
+
+    /// Asynchronously gets this output's HDR configuration.
+    pub async fn hdr_async(&self) -> HdrInfo {
+        let response = Client::output()
+            .get_hdr(GetHdrRequest {
+                output_name: self.name(),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+
+        HdrInfo {
+            enabled: response.hdr() == output::v1::Hdr::On,
+            supported: response.supported,
+            reference_white: response.reference_white_nits,
+            max_luminance: response.max_luminance_nits,
+            max_fall: response.max_fall_nits,
+        }
     }
 
     /// Focuses this output.

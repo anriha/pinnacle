@@ -120,7 +120,7 @@ drm-sys = "0.8.1"
 gag = "1.0.0"
 indexmap = { workspace = true }
 itertools = "0.14.0"
-libdisplay-info = "0.3.0"
+libdisplay-info = { version = "0.3.0", features = ["v0_3"] }
 passfd = { workspace = true }
 pinnacle-api = { path = "./api/rust", default-features = false }
 pinnacle-api-defs = { workspace = true }

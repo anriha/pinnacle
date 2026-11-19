@@ -208,6 +208,7 @@ macro_rules! pinnacle_render_elements {
                 dst: ::smithay::utils::Rectangle<i32, ::smithay::utils::Physical>,
                 damage: &[::smithay::utils::Rectangle<i32, ::smithay::utils::Physical>],
                 opaque_regions: &[::smithay::utils::Rectangle<i32, ::smithay::utils::Physical>],
+                cache: Option<&::smithay::utils::user_data::UserDataMap>,
             ) -> ::std::result::Result<
                 (),
                 <::smithay::backend::renderer::test::DummyRenderer as ::smithay::backend::renderer::RendererSuper>::Error,
@@ -216,7 +217,7 @@ macro_rules! pinnacle_render_elements {
                     $($name::$variant(elem) => {
                         ::smithay::backend::renderer::element::RenderElement::<
                             ::smithay::backend::renderer::test::DummyRenderer
-                        >::draw(elem, frame, src, dst, damage, opaque_regions)
+                        >::draw(elem, frame, src, dst, damage, opaque_regions, cache)
                     })+
                 }
             }

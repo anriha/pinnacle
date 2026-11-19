@@ -102,6 +102,28 @@ impl Backend {
         }
     }
 
+    pub fn set_output_hdr(
+        &mut self,
+        output: &Output,
+        config: crate::hdr::HdrConfig,
+    ) -> Result<(), String> {
+        match self {
+            Backend::Winit(_) => Ok(()),
+            Backend::Udev(udev) => udev.set_output_hdr(output, config),
+            #[cfg(feature = "testing")]
+            Backend::Dummy(_) => Ok(()),
+        }
+    }
+
+    pub fn output_hdr_supported(&mut self, output: &Output) -> bool {
+        match self {
+            Backend::Winit(_) => false,
+            Backend::Udev(udev) => udev.output_hdr_supported(output),
+            #[cfg(feature = "testing")]
+            Backend::Dummy(_) => false,
+        }
+    }
+
     pub fn set_output_vrr(&mut self, output: &Output, vrr: bool) {
         match self {
             Backend::Winit(_) => (),

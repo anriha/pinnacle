@@ -1124,8 +1124,8 @@ impl ColorManagementHandler for State {
     }
 
     fn description_for_output(&mut self, output: &Output) -> ImageDescription {
-        if crate::hdr::hdr_requested_for(output) {
-            crate::hdr::bt2020_pq_description()
+        if output.with_state(|state| state.hdr.enabled) {
+            output.with_state(|state| state.hdr).description()
         } else {
             ImageDescription::SRGB
         }
@@ -1169,8 +1169,8 @@ impl ColorManagementHandler for State {
             None => self.pinnacle.output_focus_stack.current_focus().cloned(),
         };
         match output {
-            Some(output) if crate::hdr::hdr_requested_for(&output) => {
-                crate::hdr::bt2020_pq_description()
+            Some(output) if output.with_state(|state| state.hdr.enabled) => {
+                output.with_state(|state| state.hdr).description()
             }
             _ => ImageDescription::SRGB,
         }

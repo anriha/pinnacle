@@ -78,6 +78,36 @@ message SetVrrRequest {
 }
 message SetVrrResponse {}
 
+enum Hdr {
+  HDR_UNSPECIFIED = 0;
+  HDR_OFF = 1;
+  HDR_ON = 2;
+}
+
+message SetHdrRequest {
+  string output_name = 1;
+  Hdr hdr = 2;
+  // Paper white for SDR content, in nits. Unset keeps the current value.
+  optional uint32 reference_white_nits = 3;
+  // Peak luminance override, in nits. Unset keeps the current value.
+  optional uint32 max_luminance_nits = 4;
+  // Full-frame average peak override, in nits. Unset keeps the current value.
+  optional uint32 max_fall_nits = 5;
+}
+message SetHdrResponse {}
+
+message GetHdrRequest {
+  string output_name = 1;
+}
+message GetHdrResponse {
+  Hdr hdr = 1;
+  // Whether the connector can be driven in BT.2020/PQ at all.
+  bool supported = 2;
+  uint32 reference_white_nits = 3;
+  uint32 max_luminance_nits = 4;
+  uint32 max_fall_nits = 5;
+}
+
 message FocusRequest {
   string output_name = 1;
 }
@@ -203,6 +233,8 @@ service OutputService {
   rpc SetTransform(SetTransformRequest) returns (google.protobuf.Empty);
   rpc SetPowered(SetPoweredRequest) returns (google.protobuf.Empty);
   rpc SetVrr(SetVrrRequest) returns (SetVrrResponse);
+
+  rpc SetHdr(SetHdrRequest) returns (SetHdrResponse);
   // Focuses the given output.
   rpc Focus(FocusRequest) returns (FocusResponse);
 
@@ -217,6 +249,7 @@ service OutputService {
   rpc GetTransform(GetTransformRequest) returns (GetTransformResponse);
   rpc GetEnabled(GetEnabledRequest) returns (GetEnabledResponse);
   rpc GetPowered(GetPoweredRequest) returns (GetPoweredResponse);
+  rpc GetHdr(GetHdrRequest) returns (GetHdrResponse);
   rpc GetFocusStackWindowIds(GetFocusStackWindowIdsRequest) returns (GetFocusStackWindowIdsResponse);
   // Returns all outputs in the given direction.
   rpc GetOutputsInDir(GetOutputsInDirRequest) returns (GetOutputsInDirResponse);

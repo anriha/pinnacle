@@ -131,6 +131,7 @@ impl RenderElement<DummyRenderer> for CommonTextureRenderElement {
         _dst: Rectangle<i32, Physical>,
         _damage: &[Rectangle<i32, Physical>],
         _opaque_regions: &[Rectangle<i32, Physical>],
+        _cache: Option<&smithay::utils::user_data::UserDataMap>,
     ) -> Result<(), <DummyRenderer as RendererSuper>::Error> {
         Ok(())
     }

@@ -4,14 +4,14 @@ use pinnacle_api_defs::pinnacle::{
         v1::{
             FocusRequest, FocusResponse, GetEnabledRequest, GetEnabledResponse,
             GetFocusStackWindowIdsRequest, GetFocusStackWindowIdsResponse, GetFocusedRequest,
-            GetFocusedResponse, GetInfoRequest, GetInfoResponse, GetLocRequest, GetLocResponse,
+            GetFocusedResponse, GetHdrRequest, GetHdrResponse, GetInfoRequest, GetInfoResponse, GetLocRequest, GetLocResponse,
             GetLogicalSizeRequest, GetLogicalSizeResponse, GetModesRequest, GetModesResponse,
             GetOutputsInDirRequest, GetOutputsInDirResponse, GetPhysicalSizeRequest,
             GetPhysicalSizeResponse, GetPoweredRequest, GetPoweredResponse, GetRequest,
             GetResponse, GetScaleRequest, GetScaleResponse, GetTagIdsRequest, GetTagIdsResponse,
             GetTransformRequest, GetTransformResponse, SetLocRequest, SetModeRequest,
-            SetModelineRequest, SetPoweredRequest, SetScaleRequest, SetTransformRequest,
-            SetVrrRequest, SetVrrResponse,
+            SetHdrRequest, SetHdrResponse, SetModelineRequest, SetPoweredRequest, SetScaleRequest,
+            SetTransformRequest, SetVrrRequest, SetVrrResponse,
         },
     },
     util::{
@@ -21,7 +21,7 @@ use pinnacle_api_defs::pinnacle::{
 };
 use smithay::output::Scale;
 use tonic::{Request, Status};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
     api::{TonicResult, run_unary, run_unary_no_response},
@@ -350,6 +350,71 @@ impl output::v1::output_service_server::OutputService for super::OutputService {
             }
 
             Ok(SetVrrResponse {})
+        })
+        .await
+    }
+
+    async fn set_hdr(&self, request: Request<SetHdrRequest>) -> TonicResult<SetHdrResponse> {
+        let request = request.into_inner();
+        let hdr = request.hdr();
+        let output_name = OutputName(request.output_name);
+
+        run_unary(&self.sender, move |state| {
+            let Some(output) = output_name.output(&state.pinnacle) else {
+                return Ok(SetHdrResponse {});
+            };
+
+            let mut config = output.with_state(|state| state.hdr);
+
+            match hdr {
+                output::v1::Hdr::Unspecified => {
+                    return Err(Status::invalid_argument("hdr was unspecified"));
+                }
+                output::v1::Hdr::Off => config.enabled = false,
+                output::v1::Hdr::On => config.enabled = true,
+            }
+
+            if let Some(nits) = request.reference_white_nits {
+                config.reference_white = nits as f64;
+            }
+            if let Some(nits) = request.max_luminance_nits {
+                config.max_luminance = nits as u16;
+            }
+            if let Some(nits) = request.max_fall_nits {
+                config.max_fall = nits as u16;
+            }
+
+            if let Err(err) = state.set_output_hdr(&output, config) {
+                warn!("Failed to set HDR on output {}: {err}", output.name());
+            }
+
+            Ok(SetHdrResponse {})
+        })
+        .await
+    }
+
+    async fn get_hdr(&self, request: Request<GetHdrRequest>) -> TonicResult<GetHdrResponse> {
+        let output_name = OutputName(request.into_inner().output_name);
+
+        run_unary(&self.sender, move |state| {
+            let Some(output) = output_name.output(&state.pinnacle) else {
+                return Ok(GetHdrResponse::default());
+            };
+
+            let config = output.with_state(|state| state.hdr);
+            let supported = state.backend.output_hdr_supported(&output);
+
+            Ok(GetHdrResponse {
+                hdr: if config.enabled {
+                    output::v1::Hdr::On as i32
+                } else {
+                    output::v1::Hdr::Off as i32
+                },
+                supported,
+                reference_white_nits: config.reference_white.round() as u32,
+                max_luminance_nits: config.max_luminance as u32,
+                max_fall_nits: config.max_fall as u32,
+            })
         })
         .await
     }

@@ -782,9 +782,8 @@ struct RenderSurface {
     screencopy_commit_state: ScreencopyCommitState,
 
     /// Whether this output is driven in BT.2020/PQ HDR mode.
-    hdr: bool,
+    hdr: crate::hdr::HdrConfig,
     /// Luminance 1.0 sRGB maps to on this output, in nits.
-    hdr_ref_white: f64,
     /// Lazily compiled shader that converts sRGB content into the HDR signal.
     hdr_program: Option<GlesTexProgram>,
     /// One-shot / rate-limited pre-scanout frame dumps (`PINNACLE_HDR_DUMP`).
@@ -1018,6 +1017,8 @@ impl Udev {
         let display_info =
             smithay_drm_extras::display_info::for_connector(drm_device, connector.handle());
 
+        let edid_hdr = display_info.as_ref().map(|info| info.hdr_static_metadata());
+
         let (make, model, serial) = display_info
             .map(|info| {
                 (
@@ -1079,7 +1080,13 @@ impl Udev {
             device_id: node,
         });
 
-        let mut hdr = crate::hdr::hdr_requested_for(&output);
+        let mut hdr = crate::hdr::HdrConfig::from_env(&output);
+        if let Some(metadata) = edid_hdr {
+            hdr.apply_edid(
+                metadata.desired_content_max_luminance,
+                metadata.desired_content_max_frame_avg_luminance,
+            );
+        }
 
         let drm_output = {
             let planes = surface.planes().clone();
@@ -1101,17 +1108,14 @@ impl Udev {
             }
         };
 
-        let hdr_ref_white = crate::hdr::ref_white();
-
-        if hdr {
-            let max_luminance = crate::hdr::max_luminance();
+        if hdr.enabled {
             let color_state = ConnectorColorState {
                 colorspace: Colorspace::Bt2020Rgb,
                 hdr_metadata: Some(HdrOutputMetadata::pq_bt2020(
-                    max_luminance,
+                    hdr.max_luminance,
                     50,
-                    max_luminance,
-                    400,
+                    hdr.max_luminance,
+                    hdr.max_fall,
                 )),
                 max_bpc: Some(10),
             };
@@ -1122,8 +1126,8 @@ impl Udev {
                 Ok(()) => info!(
                     "Driving {} in BT.2020/PQ HDR mode: {} nits SDR white, {} nit peak",
                     output.name(),
-                    hdr_ref_white,
-                    max_luminance
+                    hdr.reference_white,
+                    hdr.max_luminance
                 ),
                 Err(err) => {
                     // Signalling SDR while the compositor converts content to PQ would
@@ -1132,7 +1136,7 @@ impl Udev {
                         "Connector {} does not accept HDR state ({err}), staying SDR",
                         output.name()
                     );
-                    hdr = false;
+                    hdr.enabled = false;
                 }
             }
         }
@@ -1154,7 +1158,6 @@ impl Udev {
             render_state: RenderState::Idle,
             screencopy_commit_state: ScreencopyCommitState::default(),
             hdr,
-            hdr_ref_white,
             hdr_program: None,
             hdr_dump: crate::hdr::FrameDump::from_env(),
             hdr_log: crate::hdr::verbose(),
@@ -1191,12 +1194,22 @@ impl Udev {
                 tags,
                 scale,
                 powered,
+                hdr,
             } = saved_state.clone();
 
             output.with_state_mut(|state| state.tags.clone_from(&tags));
             pinnacle.change_output_state(self, &output, None, None, scale, Some(loc));
             if let Some(powered) = powered {
                 self.set_output_powered(&output, &pinnacle.loop_handle, powered);
+            }
+            // The colour state staged at creation came from the environment; a
+            // saved configuration from before the unplug wins.
+            if let Some(hdr) = hdr {
+                if let Err(err) = self.set_output_hdr(&output, hdr) {
+                    warn!("Failed to restore HDR on {}: {err}", output.name());
+                }
+                output.with_state_mut(|state| state.hdr = hdr);
+                pinnacle.update_preferred_descriptions(&output);
             }
         } else {
             pinnacle.signal_state.output_connect.signal(&output);
@@ -1551,7 +1564,7 @@ impl Udev {
         // element list because it decides whether the cursor may be an element at
         // all: any second element forces composition, and a composited frame is a
         // frame that went through the convert shader.
-        let hdr_passthrough = surface.hdr && hdr_content_fullscreen(pinnacle, output);
+        let hdr_passthrough = surface.hdr.enabled && hdr_content_fullscreen(pinnacle, output);
 
         let (pointer_render_elements, cursor_ids) = pointer_render_elements(
             pointer_location - output_geo.loc.to_f64(),
@@ -1664,7 +1677,7 @@ impl Udev {
         // mutex again and deadlocks the compositor with the display frozen mid-frame.
         // The first version of this code did that and hung the machine. All the
         // description lookups happen after the traversal has returned.
-        let already_encoded: Vec<smithay::backend::renderer::element::Id> = if surface.hdr {
+        let already_encoded: Vec<smithay::backend::renderer::element::Id> = if surface.hdr.enabled {
             let mut ids = Vec::new();
             let mut marked = Vec::new();
             let mut rejected = Vec::new();
@@ -1768,23 +1781,23 @@ impl Udev {
                 .set_already_encoded_elements(already_encoded);
         }
 
-        if surface.hdr {
+        if surface.hdr.enabled {
             let gles = renderer.as_gles_renderer();
             if surface.hdr_program.is_none() {
                 match gles.compile_custom_texture_shader(
-                    crate::hdr::texture_shader(surface.hdr_ref_white),
+                    surface.hdr.shader(),
                     &[],
                 ) {
                     Ok(program) => surface.hdr_program = Some(program),
                     Err(err) => {
                         warn!("Failed to compile the HDR shader, falling back to SDR: {err}");
-                        surface.hdr = false;
+                        surface.hdr.enabled = false;
                     }
                 }
             }
 
             if let Some(program) = surface.hdr_program.clone() {
-                let ref_white = surface.hdr_ref_white;
+                let ref_white = surface.hdr.reference_white;
                 let gles = renderer.as_gles_renderer();
                 if !hdr_passthrough_frame {
                     gles.set_default_tex_program_override(Some((program, Vec::new())));
@@ -1802,7 +1815,7 @@ impl Udev {
         let mut frame_flags =
             FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
 
-        if surface.hdr {
+        if surface.hdr.enabled {
             // Cursor and overlay planes bypass the convert shader entirely, so their
             // pixels would be read as PQ. Only the primary plane may scan out, and
             // only when the fullscreen window is HDR content itself.
@@ -1880,7 +1893,7 @@ impl Udev {
         // Dump before the conversion hooks are cleared below: the dump re-renders
         // the elements, and with the hooks already gone it would show pixels the
         // panel never received.
-        if surface.hdr
+        if surface.hdr.enabled
             && let Ok(res) = &render_frame_result
             && surface.hdr_dump.as_mut().is_some_and(|dump| dump.poll())
             && let Some(path) = surface.hdr_dump.as_ref().map(|d| d.path_for(&output.name()))
@@ -1895,7 +1908,7 @@ impl Udev {
             }
         }
 
-        if surface.hdr {
+        if surface.hdr.enabled {
             let gles = renderer.as_gles_renderer();
             gles.set_default_tex_program_override(None);
             gles.set_solid_color_transform(None);
@@ -1904,7 +1917,7 @@ impl Udev {
 
         let hdr_gate = hdr_passthrough;
 
-        if surface.hdr && surface.hdr_gate != Some(hdr_gate) {
+        if surface.hdr.enabled && surface.hdr_gate != Some(hdr_gate) {
             // The answer to "what does this output prefer" changed, so tell the
             // clients on it: a player that asked before it was mapped gets one
             // chance to switch to PQ instead of tone mapping to SDR.
@@ -1917,7 +1930,7 @@ impl Udev {
 
         let failed = match render_frame_result {
             Ok(res) => {
-                if surface.hdr && surface.hdr_log {
+                if surface.hdr.enabled && surface.hdr_log {
                     // The only honest answer to "is the passthrough happening": a
                     // `Swapchain` primary plane means the frame went through the
                     // convert shader, an `Element` means the client's own buffer
@@ -2155,6 +2168,86 @@ impl Udev {
         });
 
         self.set_output_vrr(output, vrr);
+    }
+
+    /// Whether this output's connector can be driven in BT.2020/PQ.
+    pub(super) fn output_hdr_supported(&mut self, output: &Output) -> bool {
+        let Some(surface) = render_surface_for_output(output, &mut self.devices) else {
+            return false;
+        };
+
+        surface
+            .drm_output
+            .with_compositor(|compositor| {
+                let drm_surface = compositor.surface();
+                let Some(connector) = drm_surface.current_connectors().into_iter().next() else {
+                    return false;
+                };
+                let hdr_metadata = drm_surface
+                    .hdr_metadata_supported(connector)
+                    .unwrap_or(false);
+                let bt2020 = drm_surface
+                    .supported_colorspaces(connector)
+                    .map(|spaces| spaces.contains(&Colorspace::Bt2020Rgb))
+                    .unwrap_or(false);
+                hdr_metadata && bt2020
+            })
+    }
+
+    /// Drive an output in BT.2020/PQ, or return it to SDR signalling.
+    ///
+    /// The colour properties are staged into the next atomic commit; nothing
+    /// takes effect until the next frame is rendered.
+    pub(super) fn set_output_hdr(
+        &mut self,
+        output: &Output,
+        config: crate::hdr::HdrConfig,
+    ) -> Result<(), String> {
+        let Some(surface) = render_surface_for_output(output, &mut self.devices) else {
+            return Err(format!("no render surface for output {}", output.name()));
+        };
+
+        let color_state = if config.enabled {
+            ConnectorColorState {
+                colorspace: Colorspace::Bt2020Rgb,
+                hdr_metadata: Some(HdrOutputMetadata::pq_bt2020(
+                    config.max_luminance,
+                    50,
+                    config.max_luminance,
+                    config.max_fall,
+                )),
+                max_bpc: Some(10),
+            }
+        } else {
+            ConnectorColorState {
+                colorspace: Colorspace::Default,
+                hdr_metadata: None,
+                max_bpc: None,
+            }
+        };
+
+        surface
+            .drm_output
+            .with_compositor(|compositor| compositor.use_color_state(color_state))
+            .map_err(|err| format!("{err}"))?;
+
+        surface.hdr = config;
+        // The program bakes in the paper white, so it is rebuilt with the new
+        // configuration. The gate and signatures describe the previous state.
+        surface.hdr_program = None;
+        surface.hdr_gate = None;
+        surface.hdr_encoded_signature = None;
+        surface.hdr_scanout = None;
+
+        info!(
+            "{} HDR on {}: {} nits SDR white, {} nit peak",
+            if config.enabled { "Enabling" } else { "Disabling" },
+            output.name(),
+            config.reference_white,
+            config.max_luminance
+        );
+
+        Ok(())
     }
 
     pub(super) fn set_output_vrr(&mut self, output: &Output, vrr: bool) {

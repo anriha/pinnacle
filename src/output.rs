@@ -76,6 +76,8 @@ pub struct OutputState {
     pub debug_damage_tracker: OutputDamageTracker,
     pub is_vrr_on: bool,
     pub is_vrr_on_demand: bool,
+    /// HDR signalling and encoding for this output.
+    pub hdr: crate::hdr::HdrConfig,
 }
 
 impl Default for OutputState {
@@ -95,6 +97,7 @@ impl Default for OutputState {
             ),
             is_vrr_on: false,
             is_vrr_on_demand: false,
+            hdr: crate::hdr::HdrConfig::OFF,
         }
     }
 }
@@ -335,6 +338,7 @@ impl Pinnacle {
                     tags: output.with_state(|state| state.tags.clone()),
                     scale: Some(output.current_scale()),
                     powered: Some(output.with_state(|state| state.powered)),
+                    hdr: Some(output.with_state(|state| state.hdr)),
                 },
             );
 
@@ -385,6 +389,7 @@ impl Pinnacle {
                 tags: output.with_state(|state| state.tags.clone()),
                 scale: Some(output.current_scale()),
                 powered: Some(output.with_state(|state| state.powered)),
+                hdr: Some(output.with_state(|state| state.hdr)),
             },
         );
 
