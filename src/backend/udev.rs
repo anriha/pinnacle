@@ -1141,6 +1141,13 @@ impl Udev {
             }
         }
 
+        // `RenderSurface::hdr` is what drives the connector, but the output's state
+        // is what the output API, the colour-management handlers and the preferred
+        // descriptions read. Seed it from the same value, fallback included: without
+        // this a PINNACLE_HDR output drives the panel in PQ while telling every
+        // client it is SDR, and they tone map their HDR content away.
+        output.with_state_mut(|state| state.hdr = hdr);
+
         let dmabuf_feedback = drm_output.with_compositor(|compositor| {
             get_surface_dmabuf_feedback(
                 self.primary_gpu,
@@ -1203,12 +1210,22 @@ impl Udev {
                 self.set_output_powered(&output, &pinnacle.loop_handle, powered);
             }
             // The colour state staged at creation came from the environment; a
-            // saved configuration from before the unplug wins.
+            // saved configuration from before the unplug wins. The output's state
+            // then follows what the connector accepted, not what was asked for: a
+            // rejected configuration leaves the surface in SDR signalling, and
+            // telling clients otherwise would make them commit PQ into it.
             if let Some(hdr) = hdr {
-                if let Err(err) = self.set_output_hdr(&output, hdr) {
-                    warn!("Failed to restore HDR on {}: {err}", output.name());
-                }
-                output.with_state_mut(|state| state.hdr = hdr);
+                let applied = match self.set_output_hdr(&output, hdr) {
+                    Ok(()) => hdr,
+                    Err(err) => {
+                        warn!("Failed to restore HDR on {}: {err}", output.name());
+                        crate::hdr::HdrConfig {
+                            enabled: false,
+                            ..hdr
+                        }
+                    }
+                };
+                output.with_state_mut(|state| state.hdr = applied);
                 pinnacle.update_preferred_descriptions(&output);
             }
         } else {
