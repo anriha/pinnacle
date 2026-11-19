@@ -23,6 +23,7 @@ use smithay::{
             },
         },
         wayland_server::protocol::wl_surface::WlSurface,
+        x11rb::properties::WmSizeHintsSpecification,
     },
     utils::{IsAlive, Logical, Point, Rectangle, Serial, Size},
     wayland::{
@@ -226,7 +227,7 @@ impl WindowElement {
                 if size.is_empty() {
                     return;
                 }
-                let loc = loc.unwrap_or_else(|| surface.geometry().loc);
+                let loc = loc.unwrap_or_else(|| surface.last_configure().loc);
                 if let Err(err) = surface.configure(Some(Rectangle::new(loc, size))) {
                     warn!("Failed to configure xwayland window: {err}");
                 }
@@ -662,12 +663,98 @@ impl Pinnacle {
         }
     }
 
+    /// Returns every output a rectangle overlaps, most-overlapped first.
+    ///
+    /// Popups position themselves, so the compositor has to figure out which monitor they
+    /// ended up on from their geometry alone.
+    pub fn outputs_for_rect(&self, rect: Rectangle<i32, Logical>) -> Vec<Output> {
+        let _span = tracy_client::span!("Pinnacle::outputs_for_rect");
+
+        let mut overlaps = self
+            .space
+            .outputs()
+            .filter_map(|output| {
+                let output_geo = self.space.output_geometry(output)?;
+                let overlap = output_geo.intersection(rect)?;
+                let area = i64::from(overlap.size.w) * i64::from(overlap.size.h);
+                Some((output.clone(), area))
+            })
+            .collect::<Vec<_>>();
+
+        overlaps.sort_by_key(|(_, area)| std::cmp::Reverse(*area));
+        overlaps.into_iter().map(|(output, _)| output).collect()
+    }
+
+    /// Picks the output an override-redirect popup belongs to.
+    ///
+    /// The output under the popup's own geometry wins, then the output of the window it is
+    /// transient for, then the focused output. Outputs without tags are skipped because a
+    /// window tagged only to them is never drawn.
+    pub fn popup_output(
+        &self,
+        rect: Rectangle<i32, Logical>,
+        parent: Option<&WindowElement>,
+    ) -> Option<Output> {
+        let candidates = self
+            .outputs_for_rect(rect)
+            .into_iter()
+            .chain(parent.and_then(|parent| parent.output(self)))
+            .chain(self.focused_output().cloned());
+
+        let mut first = None;
+        for output in candidates {
+            if output.with_state(|state| !state.tags.is_empty()) {
+                return Some(output);
+            }
+            first.get_or_insert(output);
+        }
+
+        first
+    }
+
+    /// The position an X11 client asked for through `USPosition` in `WM_NORMAL_HINTS`.
+    ///
+    /// Notification and menu windows use this to place themselves; ignoring it is what makes
+    /// them land on a monitor they were never meant for.
+    pub fn x11_user_position(&self, window: &WindowElement) -> Option<Point<i32, Logical>> {
+        // Only popups are placed where they ask. An ordinary window's `USPosition` is a
+        // suggestion from a world without a compositor; those belong to the layout.
+        if !x11_window_is_popup(window) {
+            return None;
+        }
+
+        let surface = window.x11_surface()?;
+        let (specification, x, y) = surface.size_hints()?.position?;
+        if !matches!(specification, WmSizeHintsSpecification::UserSpecified) {
+            return None;
+        }
+
+        let scale = self
+            .xwayland_state
+            .as_ref()
+            .and_then(|state| state.current_scale)
+            .filter(|scale| *scale > 0.0)
+            .unwrap_or(1.0);
+
+        // Position hints are in X11 client coordinates, which are physical pixels.
+        Some(Point::from((
+            (f64::from(x) / scale).round() as i32,
+            (f64::from(y) / scale).round() as i32,
+        )))
+    }
+
     pub fn compute_window_geometry(
         &self,
         window: &WindowElement,
         output_geo: Rectangle<i32, Logical>,
         non_exclusive_zone: Rectangle<i32, Logical>,
     ) -> Option<Rectangle<i32, Logical>> {
+        // Override-redirect windows are positioned by their client. Report their geometry
+        // untouched so nothing downstream invents a location for them.
+        if window.is_x11_override_redirect() {
+            return window.x11_surface().map(|surface| surface.last_configure());
+        }
+
         let mut non_exclusive_geo = non_exclusive_zone;
         non_exclusive_geo.loc += output_geo.loc;
 
@@ -690,6 +777,7 @@ impl Pinnacle {
                 let floating_loc = window
                     .with_state(|state| state.floating_loc())
                     .or_else(|| self.space.element_location(window))
+                    .or_else(|| self.x11_user_position(window))
                     .unwrap_or_else(|| {
                         // Attempt to center the window within its parent.
                         // If it has no parent, center it within the non-exclusive zone of its output.
@@ -951,18 +1039,6 @@ fn should_float(window: &WindowElement) -> bool {
         }
         // Logic from `wants_floating` in sway/desktop/xwayland.c
         WindowSurface::X11(surface) => {
-            let is_popup_by_type = surface.window_type().is_some_and(|typ| {
-                matches!(
-                    typ,
-                    WmWindowType::Dialog
-                        | WmWindowType::Utility
-                        | WmWindowType::Toolbar
-                        | WmWindowType::Splash
-                )
-            });
-
-            let is_transient = surface.is_transient_for().is_some();
-
             let requests_constrained_size = surface.size_hints().is_some_and(|size_hints| {
                 let Some((min_w, min_h)) = size_hints.min_size else {
                     return false;
@@ -973,11 +1049,37 @@ fn should_float(window: &WindowElement) -> bool {
                 min_w > 0 && min_h > 0 && (min_w == max_w || min_h == max_h)
             });
 
-            let should_float =
-                surface.is_popup() || is_popup_by_type || requests_constrained_size || is_transient;
-            should_float
+            x11_window_is_popup(window) || requests_constrained_size
         }
     }
+}
+
+/// Whether an X11 window is a menu, notification, tooltip or dialog that the compositor
+/// should float and place itself.
+///
+/// Steam's notification toasts are a `Notification` window transient for its main window;
+/// without these types they were tiled like ordinary application windows.
+fn x11_window_is_popup(window: &WindowElement) -> bool {
+    let Some(surface) = window.x11_surface() else {
+        return false;
+    };
+
+    let is_popup_by_type = surface.window_type().is_some_and(|typ| {
+        matches!(
+            typ,
+            WmWindowType::Dialog
+                | WmWindowType::Utility
+                | WmWindowType::Toolbar
+                | WmWindowType::Splash
+                | WmWindowType::Notification
+                | WmWindowType::Menu
+                | WmWindowType::PopupMenu
+                | WmWindowType::DropdownMenu
+                | WmWindowType::Tooltip
+        )
+    });
+
+    is_popup_by_type || surface.is_modal() || surface.is_transient_for().is_some()
 }
 
 /// The state of an unmapped window.

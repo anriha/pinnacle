@@ -101,7 +101,21 @@ impl XwmHandler for State {
             state.foreign_toplevel_list_handle = Some(handle);
         });
 
+        // A window that is transient for another one (Steam's notification toasts, dialogs,
+        // menus) belongs on that window's output, not on whatever output happens to be
+        // focused: the focused output is wherever the user last clicked and can be a
+        // different monitor entirely.
+        let parent_output = self
+            .pinnacle
+            .parent_window_for(&unmapped.window)
+            .and_then(|parent| parent.output(&self.pinnacle));
+
         if unmapped.window.output(&self.pinnacle).is_some() {
+            self.pinnacle.request_window_rules(&mut unmapped);
+        } else if let Some(output) = parent_output
+            && output.with_state(|state| !state.tags.is_empty())
+        {
+            unmapped.window.set_tags_to_output(&output);
             self.pinnacle.request_window_rules(&mut unmapped);
         } else if let Some(output) = self.pinnacle.focused_output()
             && output.with_state(|state| !state.tags.is_empty())
@@ -119,7 +133,16 @@ impl XwmHandler for State {
             "XwmHandler::mapped_override_redirect_window"
         );
 
-        let loc = surface.geometry().loc;
+        // `X11Surface::geometry` is the surface's bounding box (position 0,0) in this
+        // smithay; the client's position is the last configure.
+        let geometry = surface.last_configure();
+        let loc = geometry.loc;
+        debug!(
+            class = surface.class(),
+            ?loc,
+            ?geometry,
+            "mapping override-redirect window"
+        );
 
         let window = self
             .pinnacle
@@ -132,12 +155,15 @@ impl XwmHandler for State {
                 window
             });
 
-        if let Some(output) = self.pinnacle.focused_output() {
-            self.set_window_tags(&window, crate::window::tags_for_output(output));
+        // The client positioned this window itself, so it belongs on the output its
+        // geometry actually lands on.
+        let parent = self.pinnacle.parent_window_for(&window).cloned();
+        if let Some(output) = self.pinnacle.popup_output(geometry, parent.as_ref()) {
+            self.set_window_tags(&window, crate::window::tags_for_output(&output));
         }
 
-        self.pinnacle.map_window_to(&window, loc);
-        self.pinnacle.raise_window(window.clone());
+        self.map_override_redirect(&window, loc);
+        self.pinnacle.raise_popup(&window);
     }
 
     fn map_window_notify(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -251,7 +277,17 @@ impl XwmHandler for State {
             return;
         };
 
-        self.pinnacle.map_window_to(&win, geometry.loc);
+        // A popup that the client moved to another output has to be re-tagged, otherwise
+        // it stops drawing there once the new output's tags are the active ones.
+        let parent = self.pinnacle.parent_window_for(&win).cloned();
+        let target_output = self.pinnacle.popup_output(geometry, parent.as_ref());
+        if let Some(output) = target_output
+            && win.output(&self.pinnacle).as_ref() != Some(&output)
+        {
+            self.set_window_tags(&win, crate::window::tags_for_output(&output));
+        }
+
+        self.map_override_redirect(&win, geometry.loc);
     }
 
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
@@ -546,6 +582,17 @@ impl XwmHandler for State {
 }
 
 impl State {
+    /// Maps an override-redirect window and redraws every output it lands on.
+    ///
+    /// Override-redirect windows are positioned by their client, so they bypass the
+    /// toplevel transaction machinery entirely.
+    fn map_override_redirect(&mut self, window: &WindowElement, loc: Point<i32, Logical>) {
+        let outputs = self.pinnacle.map_override_redirect_window(window, loc);
+        for output in outputs {
+            self.schedule_render(&output);
+        }
+    }
+
     fn remove_xwayland_window(&mut self, surface: X11Surface) {
         let _span = tracy_client::span!("State::remove_xwayland_window");
 

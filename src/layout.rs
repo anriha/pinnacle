@@ -479,6 +479,12 @@ impl State {
         // Update and map unmapped non-tiled windows
         // Probably a better way to do this
         for win in self.pinnacle.windows.iter() {
+            // Override-redirect windows place themselves; inventing a floating location for
+            // them here is what used to drag context menus onto another monitor.
+            if win.is_x11_override_redirect() {
+                continue;
+            }
+
             let is_tiled = win.with_state(|state| state.layout_mode.is_tiled());
             let is_on_active_tag = win.is_on_active_tag();
             if !is_tiled && is_on_active_tag && !self.pinnacle.space.elements().any(|w| w == win) {

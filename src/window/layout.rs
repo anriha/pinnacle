@@ -98,6 +98,41 @@ impl Pinnacle {
         }
     }
 
+    /// Maps an override-redirect window at the location its client chose.
+    ///
+    /// Override-redirect windows position themselves, so they are mapped straight into the
+    /// space: no transaction, no floating-geometry default, and no configure (the X11 server
+    /// rejects those for override-redirect windows). Returns the outputs that need a redraw,
+    /// which is the union of the outputs under its old and new geometry.
+    pub fn map_override_redirect_window(
+        &mut self,
+        window: &WindowElement,
+        loc: Point<i32, Logical>,
+    ) -> Vec<Output> {
+        let mut outputs = self
+            .space
+            .element_geometry(window)
+            .map(|geo| self.outputs_for_rect(geo))
+            .unwrap_or_default();
+
+        let new_rect = Rectangle::new(loc, window.geometry().size);
+        for output in self.outputs_for_rect(new_rect) {
+            if !outputs.contains(&output) {
+                outputs.push(output);
+            }
+        }
+
+        self.space.map_element(window.clone(), loc, false);
+
+        if let Some(output) = window.output(self)
+            && !outputs.contains(&output)
+        {
+            outputs.push(output);
+        }
+
+        outputs
+    }
+
     /// Configure a window state and geometry and add it to the [`TransactionBuilder`]
     pub fn configure_window_and_add_map(
         &self,
@@ -143,6 +178,19 @@ impl Pinnacle {
     /// applied at the same time the new layout is.
     pub fn update_window_geometry(&mut self, window: &WindowElement, need_layout: bool) {
         let _span = tracy_client::span!("Pinnacle::update_window_geometry");
+
+        // Override-redirect windows are placed by their client. Letting them fall through to
+        // the floating default here is what used to drag context menus onto another monitor.
+        if window.is_x11_override_redirect() {
+            if let Some(loc) = window
+                .x11_surface()
+                .map(|surface| surface.last_configure().loc)
+            {
+                self.map_override_redirect_window(window, loc);
+            }
+            return;
+        }
+
         let output = window.output(self);
 
         let Some(output) = output else {

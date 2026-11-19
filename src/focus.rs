@@ -242,6 +242,35 @@ impl Pinnacle {
         self.update_xwayland_stacking_order();
     }
 
+    /// Raise an override-redirect popup directly above the window it belongs to.
+    ///
+    /// This has to run after the popup is mapped: `Space::raise_element` ignores elements that
+    /// are not in the space, so raising before the map is a no-op and the popup keeps whatever
+    /// z-order mapping gave it. Without a parent window the popup goes on top of the stack.
+    pub fn raise_popup(&mut self, window: &WindowElement) {
+        let _span = tracy_client::span!("Pinnacle::raise_popup");
+
+        let parent = self.parent_window_for(window).cloned();
+
+        self.z_index_stack
+            .retain(|z| !matches!(z, ZIndexElement::Window(win) if win == window));
+
+        let index = parent
+            .and_then(|parent| {
+                self.z_index_stack
+                    .iter()
+                    .position(|z| matches!(z, ZIndexElement::Window(win) if *win == parent))
+            })
+            .map(|index| index + 1)
+            .unwrap_or(self.z_index_stack.len());
+
+        self.z_index_stack
+            .insert(index, ZIndexElement::Window(window.clone()));
+
+        self.fixup_z_layering();
+        self.update_xwayland_stacking_order();
+    }
+
     /// Lower a window to the bottom of the z-index stack.
     pub fn lower_window(&mut self, window: WindowElement) {
         let _span = tracy_client::span!("Pinnacle::lower_window");
