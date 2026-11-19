@@ -154,6 +154,15 @@ impl Pinnacle {
         );
 
         builder.add(window, Location::MapTo(geo.loc), serial, &self.loop_handle);
+
+        // A window that is not on screen yet has never been configured to the tile the layout
+        // just gave it, so its client has to resize and repaint before the window can be shown
+        // at that size. The client acks the configure first, so wait for the repaint rather than
+        // mapping the buffer it still has. Windows already on screen keep their map: holding
+        // them would freeze a resize the user is watching.
+        if window.is_wayland() && self.space.element_location(window).is_none() {
+            builder.hold_until_size(window, geo.size);
+        }
     }
 
     /// Configure a window state and geometry, then schedule mapping it.

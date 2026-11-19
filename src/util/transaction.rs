@@ -3,7 +3,7 @@
 //! Based on [Niri's implementation](https://github.com/YaLTeR/niri/blob/abac28a65c6c742114ef292221dd26e2a3a2f04b/src/utils/transaction.rs).
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     rc::Rc,
     sync::{
@@ -23,10 +23,10 @@ use smithay::{
         },
         wayland_server::Client,
     },
-    utils::{IsAlive, Logical, Point, Rectangle, Serial},
+    utils::{IsAlive, Logical, Point, Rectangle, Serial, Size},
     wayland::compositor::{Blocker, BlockerState},
 };
-use tracing::{error, trace, trace_span, warn};
+use tracing::{debug, error, trace, trace_span, warn};
 
 use crate::{
     grab::resize_grab::ResizeEdge,
@@ -39,12 +39,28 @@ use crate::{
 /// Prevents windows form hanging.
 const TIMEOUT: Duration = Duration::from_millis(150);
 
+/// How far a window's committed size may differ from the size it was configured to and still
+/// count as painted at that size.
+///
+/// Clients convert logical sizes to buffers and back, and at fractional scales that round trip
+/// can be off by a pixel or two.
+const SIZE_ROUNDING_TOLERANCE: i32 = 2;
+
+/// Whether `window` has committed a surface size that matches the size it was configured to.
+fn window_painted_at(window: &WindowElement, size: Size<i32, Logical>) -> bool {
+    let current = window.geometry().size;
+
+    (current.w - size.w).abs() <= SIZE_ROUNDING_TOLERANCE
+        && (current.h - size.h).abs() <= SIZE_ROUNDING_TOLERANCE
+}
+
 /// A builder for transactions.
 #[derive(Debug)]
 pub struct TransactionBuilder {
     inner: Arc<Inner>,
     deadline: Rc<RefCell<Deadline>>,
     target_locs: HashMap<WindowElement, Location>,
+    held_until_painted: HashMap<WindowElement, Size<i32, Logical>>,
 }
 
 /// The target location for a window.
@@ -76,12 +92,54 @@ pub struct PendingTransaction {
     ///
     /// This is used to throttle resizing.
     pub is_resize: bool,
+    /// Windows whose map waits for the size they were configured to, with that size.
+    ///
+    /// See [`TransactionBuilder::hold_until_size`].
+    held_until_painted: HashMap<WindowElement, Size<i32, Logical>>,
+    /// When to stop waiting for [`Self::held_until_painted`].
+    paint_deadline: Instant,
+    /// Whether the hold has already been logged, to keep that to one line per transaction.
+    hold_reported: Cell<bool>,
     /// Held until this transaction drops, at which point the `UnmappingWindow`s in the
     /// z_index_stack are no longer valid
     _unmapping: Vec<Rc<UnmappingWindow>>,
 }
 
 impl PendingTransaction {
+    /// Whether every window this transaction maps has the size it was configured to.
+    ///
+    /// A window that is still in a pending transaction has not been shown yet, so the only
+    /// thing holding it back is the client's repaint. The deadline bounds that wait: a client
+    /// that never repaints gets its window mapped at whatever size it has, as it would have
+    /// been without the hold, instead of staying invisible.
+    pub fn sizes_settled(&self) -> bool {
+        Instant::now() >= self.paint_deadline
+            || self
+                .held_until_painted
+                .iter()
+                .all(|(window, size)| !window.alive() || window_painted_at(window, *size))
+    }
+
+    /// Logs, once, the windows this transaction is holding back and the sizes involved.
+    pub(crate) fn report_hold(&self) {
+        if self.hold_reported.replace(true) {
+            return;
+        }
+
+        for (window, size) in self.held_until_painted.iter() {
+            if window_painted_at(window, *size) {
+                continue;
+            }
+
+            debug!(
+                window = %window.class().unwrap_or_default(),
+                current = ?window.geometry().size,
+                configured = ?size,
+                "holding a window off screen until it paints its configured size"
+            );
+        }
+    }
+
     /// Whether this transaction has finished.
     pub fn is_completed(&self) -> bool {
         self.inner
@@ -104,6 +162,7 @@ impl TransactionBuilder {
                 Instant::now() + TIMEOUT,
             ))),
             target_locs: Default::default(),
+            held_until_painted: Default::default(),
         }
     }
 
@@ -114,6 +173,16 @@ impl TransactionBuilder {
         };
         txn.register_deadline_timer(loop_handle);
         txn
+    }
+
+    /// Holds the map of `window` until its client has committed the size it was configured to.
+    ///
+    /// A client acknowledges a configure long before it repaints, so the commit that unblocks a
+    /// transaction usually still carries the previous buffer. Mapping on that commit puts the
+    /// window on screen at its old size in its new place for a frame or two, which is what reads
+    /// as a flicker the first time a tag with an already-open window is shown.
+    pub fn hold_until_size(&mut self, window: &WindowElement, size: Size<i32, Logical>) {
+        self.held_until_painted.insert(window.clone(), size);
     }
 
     /// Adds a window to this transaction.
@@ -154,6 +223,9 @@ impl TransactionBuilder {
             inner: Arc::downgrade(&self.inner),
             is_swap,
             is_resize,
+            held_until_painted: self.held_until_painted,
+            paint_deadline: Instant::now() + TIMEOUT,
+            hold_reported: Cell::new(false),
             _unmapping: unmapping,
         }
     }

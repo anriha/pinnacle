@@ -81,6 +81,14 @@ pub struct Window {
 
     current_configure_serial: Option<u32>,
     pending_configure: PendingConfigure,
+    /// Whether a configure immediately resizes the surface.
+    ///
+    /// Real clients acknowledge a configure and repaint on a later frame, so a
+    /// test can turn this off to model the window that is shown at its previous
+    /// size before the new buffer lands.
+    pub apply_configure_size: bool,
+    /// The size of the last configure this window received.
+    last_configure_size: Option<(i32, i32)>,
     size_configure_hook: Option<Box<dyn FnMut((i32, i32)) -> bool>>,
     pub close_requested: bool,
     pub fullscreen: bool,
@@ -229,6 +237,8 @@ impl State {
             viewport,
             current_configure_serial: None,
             pending_configure: Default::default(),
+            apply_configure_size: true,
+            last_configure_size: None,
             size_configure_hook: None,
             close_requested: false,
             fullscreen: false,
@@ -254,6 +264,11 @@ impl Window {
 
     pub fn current_serial(&self) -> Option<u32> {
         self.current_configure_serial
+    }
+
+    /// The size of the last configure this window received.
+    pub fn last_configure_size(&self) -> Option<(i32, i32)> {
+        self.last_configure_size
     }
 
     pub fn commit(&self) {
@@ -470,7 +485,11 @@ impl Dispatch<XdgSurface, ()> for State {
                     if h == 0 {
                         h = 480;
                     }
-                    window.viewport.set_destination(w, h);
+                    window.last_configure_size = Some((w, h));
+
+                    if window.apply_configure_size {
+                        window.viewport.set_destination(w, h);
+                    }
                 }
 
                 if let Some(states) = states {

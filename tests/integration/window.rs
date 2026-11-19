@@ -229,3 +229,92 @@ fn window_floating_pick_size() {
     let size = fixture.pinnacle().windows[0].geometry().size;
     assert_eq!(size, (500, 500).into());
 }
+
+/// A window that maps while its tag is hidden keeps the size its client chose, because the
+/// compositor only lays out the tags an output is showing. The first visit to that tag is the
+/// first time the window is configured to a tile size, and a real client acknowledges that
+/// configure before it repaints. The compositor must not show the window in between: doing so
+/// flashes the old buffer at the new place for a frame or two.
+#[test_log::test]
+fn first_visit_to_a_tag_does_not_show_the_window_at_its_old_size() {
+    let (mut fixture, output) = set_up();
+
+    let tag2 = Tag::new("2".to_string());
+    output.with_state_mut(|state| state.add_tags([tag2.clone()]));
+
+    let id = fixture.add_client();
+
+    // Map a tiled window while its tag is hidden, and have the client acknowledge configures
+    // without resizing, the way a real toolkit does before it repaints.
+    let window = fixture.client(id).create_window();
+    window.apply_configure_size = false;
+    window.set_app_id("late-paint");
+    window.commit();
+    let surface = window.surface();
+    fixture.roundtrip(id);
+
+    fixture.pinnacle().unmapped_windows[0]
+        .window
+        .with_state_mut(|state| state.tags = [tag2.clone()].into_iter().collect());
+
+    let window = fixture.client(id).window_for_surface(&surface);
+    window.attach_buffer();
+    window.ack_and_commit();
+    fixture.roundtrip(id);
+
+    let win = fixture.pinnacle().windows[0].clone();
+    let old_size = win.geometry().size;
+    assert!(fixture.pinnacle().space.element_location(&win).is_none());
+
+    // Drain the configure the map itself produced.
+    fixture.client(id).ack_all_window();
+    fixture.roundtrip(id);
+    fixture.dispatch();
+
+    // First visit to the tag: the layout assigns the window a tile.
+    pinnacle::api::tag::switch_to(fixture.state(), &tag2);
+    fixture.dispatch_until(|fixture| !fixture.pinnacle().layout_state.layout_trees.is_empty());
+    fixture.wait_client_configure(id);
+
+    let tile_size = fixture
+        .client(id)
+        .window_for_surface(&surface)
+        .last_configure_size()
+        .expect("window was configured to a tile size");
+    assert_ne!(tile_size, (old_size.w, old_size.h));
+
+    // The client acknowledges the configure but has not painted the new size yet.
+    fixture.client(id).ack_all_window();
+    fixture.roundtrip(id);
+    fixture.dispatch();
+
+    assert!(
+        fixture.pinnacle().space.element_location(&win).is_none(),
+        "window was mapped at its old size {old_size:?} before painting the configured {tile_size:?}"
+    );
+
+    // It paints at the configured size.
+    let window = fixture.client(id).window_for_surface(&surface);
+    window.set_size(tile_size.0, tile_size.1);
+    window.commit();
+    fixture.roundtrip(id);
+    fixture.dispatch();
+
+    assert!(
+        fixture.pinnacle().space.element_location(&win).is_some(),
+        "window stayed unmapped after painting its configured size"
+    );
+    assert_eq!(win.geometry().size, tile_size.into());
+
+    // Coming back needs no configure: the window is already at its tile size, so the switch must
+    // not wait for anything.
+    let tag1 = output
+        .with_state(|state| state.tags.first().cloned())
+        .expect("set_up leaves one tag on the output");
+
+    pinnacle::api::tag::switch_to(fixture.state(), &tag1);
+    fixture.dispatch_until(|fixture| fixture.pinnacle().space.element_location(&win).is_none());
+
+    pinnacle::api::tag::switch_to(fixture.state(), &tag2);
+    fixture.dispatch_until(|fixture| fixture.pinnacle().space.element_location(&win).is_some());
+}

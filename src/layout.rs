@@ -270,11 +270,23 @@ impl PendingTransactions {
         // to get surfaces to map
         let is_wlcs = cfg!(feature = "wlcs");
 
-        if next.is_completed() || next.is_cancelled() || is_wlcs {
+        if next.is_cancelled() || is_wlcs {
             return Some(entry.remove(0));
         }
 
-        None
+        if !next.is_completed() {
+            return None;
+        }
+
+        // The windows in this transaction have not been on screen yet, so wait for their clients
+        // to paint the size they were configured to instead of mapping the buffers they still
+        // have. See `TransactionBuilder::hold_until_size`.
+        if !next.sizes_settled() {
+            next.report_hold();
+            return None;
+        }
+
+        Some(entry.remove(0))
     }
 
     #[cfg(feature = "testing")]
