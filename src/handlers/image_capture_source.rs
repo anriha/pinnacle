@@ -1,6 +1,4 @@
 use smithay::{
-    delegate_image_capture_source, delegate_output_capture_source,
-    delegate_toplevel_capture_source,
     output::WeakOutput,
     wayland::{
         foreign_toplevel_list::{ForeignToplevelHandle, ForeignToplevelWeakHandle},
@@ -20,7 +18,6 @@ pub enum ImageCaptureSourceKind {
 }
 
 impl ImageCaptureSourceHandler for State {}
-delegate_image_capture_source!(State);
 
 impl OutputCaptureSourceHandler for State {
     fn output_capture_source_state(&mut self) -> &mut OutputCaptureSourceState {
@@ -37,7 +34,6 @@ impl OutputCaptureSourceHandler for State {
             .insert_if_missing(|| ImageCaptureSourceKind::Output(output.downgrade()));
     }
 }
-delegate_output_capture_source!(State);
 
 impl ToplevelCaptureSourceHandler for State {
     fn toplevel_capture_source_state(&mut self) -> &mut ToplevelCaptureSourceState {
@@ -47,11 +43,10 @@ impl ToplevelCaptureSourceHandler for State {
     fn toplevel_source_created(
         &mut self,
         source: ImageCaptureSource,
-        toplevel: &ForeignToplevelHandle,
+        toplevel: ForeignToplevelHandle,
     ) {
         source
             .user_data()
             .insert_if_missing(|| ImageCaptureSourceKind::Toplevel(toplevel.downgrade()));
     }
 }
-delegate_toplevel_capture_source!(State);

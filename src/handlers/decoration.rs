@@ -2,7 +2,6 @@ use std::cell::RefCell;
 
 use smithay::reexports::wayland_server::{Resource, Weak};
 use smithay::{
-    delegate_kde_decoration, delegate_xdg_decoration,
     reexports::{
         wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1,
         wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
@@ -178,8 +177,14 @@ impl XdgDecorationHandler for State {
         let _span = tracy_client::span!("XdgDecorationHandler::unset_mode");
         self.unset_mode(toplevel);
     }
+
+    fn decoration_destroyed(&mut self, toplevel: ToplevelSurface) {
+        let _span = tracy_client::span!("XdgDecorationHandler::decoration_destroyed");
+        // The client destroyed its decoration object, so the toplevel falls back
+        // to whatever the window rules ask for, exactly as an unset request does.
+        self.unset_mode(toplevel);
+    }
 }
-delegate_xdg_decoration!(State);
 
 type KdeDecorationObject = RefCell<KdeDecorationObjectInner>;
 
@@ -303,7 +308,6 @@ impl KdeDecorationHandler for State {
         });
     }
 }
-delegate_kde_decoration!(State);
 
 /// Updates the KDE decoration mode of a surface (if it has one) from an XDG decoration mode.
 pub fn update_kde_decoration_mode(surface: &WlSurface, mode: zxdg_toplevel_decoration_v1::Mode) {

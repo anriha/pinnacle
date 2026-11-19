@@ -16,4 +16,3 @@ impl DrmHandler for State {
             .map_err(|_| ImportError::Failed)
     }
 }
-delegate_wl_drm!(State);

@@ -30,6 +30,9 @@ use crate::{
     window::{Unmapped, WindowElement, ZIndexElement, rules::WindowRuleState},
 };
 use smithay::{
+    wayland::color::management::{
+        ColorManagementState, Feature, Primaries, RenderIntent, TransferFunction,
+    },
     backend::renderer::element::{
         RenderElementState, RenderElementStates, utils::select_dmabuf_feedback,
     },
@@ -184,6 +187,7 @@ pub struct Pinnacle {
     pub toplevel_capture_source_state: ToplevelCaptureSourceState,
     pub image_copy_capture_state: ImageCopyCaptureState,
     pub content_type_state: ContentTypeState,
+    pub color_management_state: ColorManagementState,
 
     pub lock_state: LockState,
 
@@ -324,6 +328,39 @@ fn filter_restricted_client(client: &Client) -> bool {
 }
 
 impl Pinnacle {
+    /// Tell every client on `output` what that output prefers now.
+    ///
+    /// The preferred description is advisory, but clients act on it: mpv takes it
+    /// as the target color space and tone maps HDR content to it. Sending it when
+    /// the passthrough gate flips is what lets a client that asked before it was
+    /// mapped correct itself once it is fullscreen on an HDR output.
+    pub fn update_preferred_descriptions(&mut self, output: &Output) {
+        use smithay::wayland::color::management::ImageDescription;
+
+        let description = if crate::hdr::hdr_requested_for(output) {
+            crate::hdr::bt2020_pq_description()
+        } else {
+            ImageDescription::SRGB
+        };
+        let surfaces: Vec<_> = self
+            .space
+            .elements()
+            .filter(|window| {
+                self.space
+                    .outputs_for_element(window)
+                    .iter()
+                    .any(|o| o == output)
+            })
+            .filter_map(|window| window.toplevel())
+            .map(|toplevel| toplevel.wl_surface().clone())
+            .collect();
+
+        for surface in surfaces {
+            self.color_management_state
+                .preferred_changed(&surface, description.clone());
+        }
+    }
+
     pub fn new(
         display: Display<State>,
         loop_signal: LoopSignal,
@@ -494,6 +531,27 @@ impl Pinnacle {
             ),
             image_copy_capture_state: ImageCopyCaptureState::new::<State>(&display_handle),
             content_type_state: ContentTypeState::new::<State>(&display_handle),
+            color_management_state: ColorManagementState::new::<State, _>(
+                &display_handle,
+                [
+                    TransferFunction::Srgb,
+                    TransferFunction::St2084Pq,
+                    TransferFunction::ExtLinear,
+                    TransferFunction::Bt1886,
+                ],
+                [Primaries::Srgb, Primaries::Bt2020],
+                [
+                    Feature::Parametric,
+                    Feature::SetPrimaries,
+                    Feature::SetLuminances,
+                    Feature::SetMasteringDisplayPrimaries,
+                    Feature::ExtendedTargetVolume,
+                    Feature::WindowsScrgb,
+                    Feature::WindowsBt2100,
+                ],
+                [RenderIntent::Perceptual, RenderIntent::Relative],
+                |_client| true,
+            ),
 
             lock_state: LockState::default(),
 
@@ -725,6 +783,7 @@ impl Pinnacle {
                     surface,
                     output,
                     states,
+                    None,
                     render_element_states,
                     self.primary_scanout_output_compare(),
                 );
@@ -744,6 +803,7 @@ impl Pinnacle {
                             surface,
                             output,
                             states,
+                            None,
                             render_element_states,
                             self.primary_scanout_output_compare(),
                         );
@@ -766,6 +826,7 @@ impl Pinnacle {
                     surface,
                     output,
                     states,
+                    None,
                     render_element_states,
                     self.primary_scanout_output_compare(),
                 );
@@ -789,6 +850,7 @@ impl Pinnacle {
                         surface,
                         output,
                         states,
+                        None,
                         render_element_states,
                         self.primary_scanout_output_compare(),
                     );
@@ -807,6 +869,7 @@ impl Pinnacle {
                         surface,
                         output,
                         states,
+                        None,
                         render_element_states,
                         self.primary_scanout_output_compare(),
                     );
@@ -825,6 +888,7 @@ impl Pinnacle {
                         surface,
                         output,
                         states,
+                        None,
                         render_element_states,
                         self.primary_scanout_output_compare(),
                     );

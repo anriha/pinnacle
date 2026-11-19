@@ -2,6 +2,7 @@ use std::{collections::HashMap, fs::File, io::Read, ops::Deref};
 
 use smithay::{
     output::{Output, WeakOutput},
+    wayland::{Dispatch2, GlobalDispatch2},
     reexports::{
         wayland_protocols_wlr::gamma_control::v1::server::{
             zwlr_gamma_control_manager_v1::{self, ZwlrGammaControlManagerV1},
@@ -50,7 +51,7 @@ impl GammaControlManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
         D: GlobalDispatch<ZwlrGammaControlManagerV1, GammaControlManagerGlobalData>
-            + Dispatch<ZwlrGammaControlManagerV1, ()>
+            + Dispatch<ZwlrGammaControlManagerV1, GammaControlManagerUserData>
             + Dispatch<ZwlrGammaControlV1, GammaControlState>
             + GammaControlHandler
             + 'static,
@@ -74,44 +75,43 @@ pub struct GammaControlState {
     gamma_size: u32,
 }
 
-impl<D> GlobalDispatch<ZwlrGammaControlManagerV1, GammaControlManagerGlobalData, D>
-    for GammaControlManagerState
+/// User data for manager objects (must be a type this crate owns).
+#[derive(Debug, Clone, Copy)]
+pub struct GammaControlManagerUserData;
+
+impl<D> GlobalDispatch2<ZwlrGammaControlManagerV1, D> for GammaControlManagerGlobalData
 where
-    D: GlobalDispatch<ZwlrGammaControlManagerV1, GammaControlManagerGlobalData>
-        + Dispatch<ZwlrGammaControlManagerV1, ()>
+    D: Dispatch<ZwlrGammaControlManagerV1, GammaControlManagerUserData>
         + Dispatch<ZwlrGammaControlV1, GammaControlState>
         + GammaControlHandler
         + 'static,
 {
     fn bind(
+        &self,
         _state: &mut D,
         _handle: &DisplayHandle,
         _client: &Client,
         resource: wayland_server::New<ZwlrGammaControlManagerV1>,
-        _global_data: &GammaControlManagerGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, GammaControlManagerUserData);
     }
 
-    fn can_view(client: Client, global_data: &GammaControlManagerGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<ZwlrGammaControlManagerV1, (), D> for GammaControlManagerState
+impl<D> Dispatch2<ZwlrGammaControlManagerV1, D> for GammaControlManagerUserData
 where
-    D: Dispatch<ZwlrGammaControlManagerV1, ()>
-        + Dispatch<ZwlrGammaControlV1, GammaControlState>
-        + GammaControlHandler
-        + 'static,
+    D: Dispatch<ZwlrGammaControlV1, GammaControlState> + GammaControlHandler + 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         _manager: &ZwlrGammaControlManagerV1,
         request: <ZwlrGammaControlManagerV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -193,16 +193,16 @@ macro_rules! delegate_gamma_control {
     };
 }
 
-impl<D> Dispatch<ZwlrGammaControlV1, GammaControlState, D> for GammaControlManagerState
+impl<D> Dispatch2<ZwlrGammaControlV1, D> for GammaControlState
 where
-    D: Dispatch<ZwlrGammaControlV1, GammaControlState> + GammaControlHandler + 'static,
+    D: GammaControlHandler + 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ZwlrGammaControlV1,
         request: <ZwlrGammaControlV1 as Resource>::Request,
-        data: &GammaControlState,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -228,7 +228,7 @@ where
             return;
         };
 
-        let GammaControlState { gamma_size } = data;
+        let gamma_size = &self.gamma_size;
 
         let gamma_size = *gamma_size as usize;
 
@@ -294,10 +294,10 @@ where
     }
 
     fn destroyed(
+        &self,
         state: &mut D,
         _client: ClientId,
         resource: &ZwlrGammaControlV1,
-        _data: &GammaControlState,
     ) {
         let gamma_controls = &mut state.gamma_control_manager_state().gamma_controls;
 

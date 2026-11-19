@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use smithay::{
-    delegate_xdg_activation,
     input::Seat,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     wayland::xdg_activation::{
@@ -123,4 +122,3 @@ impl XdgActivationHandler for State {
         self.pinnacle.xdg_activation_state.remove_token(&token);
     }
 }
-delegate_xdg_activation!(State);

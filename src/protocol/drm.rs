@@ -24,6 +24,7 @@ mod generated {
 }
 
 use smithay::{
+    wayland::{Dispatch2, GlobalDispatch2},
     backend::allocator::{
         Fourcc, Modifier,
         dmabuf::{Dmabuf, DmabufFlags},
@@ -68,59 +69,50 @@ pub struct DrmInstanceData {
     dmabuf_global: DmabufGlobal,
 }
 
-impl<D> GlobalDispatch<wl_drm::WlDrm, DrmGlobalData, D> for WlDrmState
+impl<D> GlobalDispatch2<wl_drm::WlDrm, D> for DrmGlobalData
 where
-    D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
-        + Dispatch<wl_drm::WlDrm, DrmInstanceData>
-        + BufferHandler
-        + DmabufHandler
-        + 'static,
+    D: Dispatch<wl_drm::WlDrm, DrmInstanceData> + BufferHandler + DmabufHandler + 'static,
 {
     fn bind(
+        &self,
         _state: &mut D,
         _dh: &DisplayHandle,
         _client: &Client,
         resource: New<wl_drm::WlDrm>,
-        global_data: &DrmGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
         let data = DrmInstanceData {
-            formats: global_data.formats.clone(),
-            dmabuf_global: global_data.dmabuf_global,
+            formats: self.formats.clone(),
+            dmabuf_global: self.dmabuf_global,
         };
         let drm_instance = data_init.init(resource, data);
 
-        drm_instance.device(global_data.device_path.to_string_lossy().into_owned());
+        drm_instance.device(self.device_path.to_string_lossy().into_owned());
         if drm_instance.version() >= 2 {
             drm_instance.capabilities(wl_drm::Capability::Prime as u32);
         }
-        for format in global_data.formats.iter() {
+        for format in self.formats.iter() {
             if let Ok(converted) = wl_drm::Format::try_from(*format as u32) {
                 drm_instance.format(converted as u32);
             }
         }
     }
 
-    fn can_view(client: Client, global_data: &DrmGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<wl_drm::WlDrm, DrmInstanceData, D> for WlDrmState
+impl<D> Dispatch2<wl_drm::WlDrm, D> for DrmInstanceData
 where
-    D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
-        + Dispatch<wl_drm::WlDrm, DrmInstanceData>
-        + Dispatch<WlBuffer, Dmabuf>
-        + BufferHandler
-        + DrmHandler
-        + 'static,
+    D: Dispatch<WlBuffer, Dmabuf> + BufferHandler + DrmHandler + 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         drm: &wl_drm::WlDrm,
         request: wl_drm::Request,
-        data: &DrmInstanceData,
         _dh: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -146,7 +138,7 @@ where
             } => {
                 let format = match Fourcc::try_from(format) {
                     Ok(format) => {
-                        if !data.formats.contains(&format) {
+                        if !self.formats.contains(&format) {
                             drm.post_error(
                                 wl_drm::Error::InvalidFormat,
                                 String::from("Format not advertised by wl_drm"),
@@ -178,10 +170,10 @@ where
                     Modifier::Invalid,
                     DmabufFlags::empty(),
                 );
-                dma.add_plane(name, 0, offset0 as u32, stride0 as u32);
+                dma.add_plane(name, offset0 as u32, stride0 as u32);
                 match dma.build() {
                     Some(dmabuf) => {
-                        match state.dmabuf_imported(&data.dmabuf_global, dmabuf.clone()) {
+                        match state.dmabuf_imported(&self.dmabuf_global, dmabuf.clone()) {
                             Ok(()) => {
                                 // import was successful
                                 let _ = data_init.init(id, dmabuf);

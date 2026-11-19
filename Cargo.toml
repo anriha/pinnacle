@@ -116,7 +116,7 @@ bytemuck = "1.25.0"
 clap = { workspace = true }
 clap_complete = "4.5.66"
 cliclack = "0.3.8"
-drm-sys = "0.8.0"
+drm-sys = "0.8.1"
 gag = "1.0.0"
 indexmap = { workspace = true }
 itertools = "0.14.0"
@@ -132,7 +132,7 @@ slab_tree = { git = "https://github.com/Ottatop/slab-tree", rev = "d6adbbb" } # 
 snowcap = { path = "./snowcap", optional = true }
 snowcap-api = { path = "./snowcap/api/rust", optional = true }
 snowcap-protocols = { workspace = true }
-sysinfo = "0.38.1"
+sysinfo = "0.37"
 taffy = "=0.8.2" # Patched below for rounding fixes
 tokio = { workspace = true, features = ["process", "io-util", "signal"] }
 tokio-stream = { workspace = true }
@@ -202,3 +202,7 @@ workspace = true
 [patch.crates-io]
 taffy = { git = "https://github.com/Ottatop/taffy", rev = "dcdaa42" } # Rounding fixes
 softbuffer = { git = "https://github.com/Ottatop/softbuffer", rev = "cd65c9e" }
+
+[patch."https://github.com/Smithay/smithay"]
+smithay = { path = "../smithay-master" }
+smithay-drm-extras = { path = "../smithay-master/smithay-drm-extras" }

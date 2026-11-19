@@ -11,7 +11,6 @@ use smithay::{
             gles::{GlesRenderbuffer, GlesRenderer},
         },
     },
-    delegate_image_copy_capture,
     output::Output,
     reexports::wayland_server::protocol::wl_shm,
     utils::{Buffer, Physical, Point, Rectangle, Size, Transform},
@@ -78,6 +77,7 @@ impl ImageCopyCaptureHandler for State {
     fn cursor_capture_constraints(
         &mut self,
         source: &ImageCaptureSource,
+        _pointer: &smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer,
     ) -> Option<BufferConstraints> {
         let (size, _scale) = self
             .pinnacle
@@ -138,7 +138,6 @@ impl ImageCopyCaptureHandler for State {
             .retain(|sess| *sess != session);
     }
 }
-delegate_image_copy_capture!(State);
 
 impl State {
     pub fn process_capture_sessions(&mut self) {

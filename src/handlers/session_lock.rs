@@ -1,5 +1,4 @@
 use smithay::{
-    delegate_session_lock,
     output::Output,
     reexports::wayland_server::protocol::wl_output::WlOutput,
     wayland::session_lock::{
@@ -142,4 +141,3 @@ impl SessionLockHandler for State {
         self.schedule_render(&output);
     }
 }
-delegate_session_lock!(State);

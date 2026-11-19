@@ -24,6 +24,7 @@ use smithay::{
     },
     utils::{Physical, Rectangle},
     wayland::{
+        Dispatch2, GlobalDispatch2,
         dmabuf::get_dmabuf,
         shm::{self, shm_format_to_fourcc},
     },
@@ -34,6 +35,13 @@ const VERSION: u32 = 3;
 
 pub struct ScreencopyManagerState;
 
+/// User data for manager objects.
+///
+/// `Dispatch2` implementations must live on a type this crate owns, so the manager
+/// objects cannot use `()` as their user data any more.
+#[derive(Debug, Clone, Copy)]
+pub struct ScreencopyManagerUserData;
+
 pub struct ScreencopyManagerGlobalData {
     filter: Box<dyn Fn(&Client) -> bool + Send + Sync>,
 }
@@ -42,7 +50,7 @@ impl ScreencopyManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
         D: GlobalDispatch<ZwlrScreencopyManagerV1, ScreencopyManagerGlobalData>
-            + Dispatch<ZwlrScreencopyManagerV1, ()>
+            + Dispatch<ZwlrScreencopyManagerV1, ScreencopyManagerUserData>
             + Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState>
             + ScreencopyHandler
             + 'static,
@@ -56,45 +64,41 @@ impl ScreencopyManagerState {
     }
 }
 
-impl<D> GlobalDispatch<ZwlrScreencopyManagerV1, ScreencopyManagerGlobalData, D>
-    for ScreencopyManagerState
+impl<D> GlobalDispatch2<ZwlrScreencopyManagerV1, D> for ScreencopyManagerGlobalData
 where
-    D: GlobalDispatch<ZwlrScreencopyManagerV1, ScreencopyManagerGlobalData>
-        + Dispatch<ZwlrScreencopyManagerV1, ()>
-        + Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState>
-        + ScreencopyHandler
-        + 'static,
+    D: Dispatch<ZwlrScreencopyManagerV1, ScreencopyManagerUserData>,
+    D: Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState>,
+    D: ScreencopyHandler,
+    D: 'static,
 {
     fn bind(
+        &self,
         _state: &mut D,
         _handle: &DisplayHandle,
         _client: &Client,
         resource: wayland_server::New<ZwlrScreencopyManagerV1>,
-        _global_data: &ScreencopyManagerGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, ScreencopyManagerUserData);
     }
 
-    fn can_view(client: Client, global_data: &ScreencopyManagerGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<ZwlrScreencopyManagerV1, (), D> for ScreencopyManagerState
+impl<D> Dispatch2<ZwlrScreencopyManagerV1, D> for ScreencopyManagerUserData
 where
-    D: GlobalDispatch<ZwlrScreencopyManagerV1, ScreencopyManagerGlobalData>
-        + Dispatch<ZwlrScreencopyManagerV1, ()>
-        + Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState>
-        + ScreencopyHandler
-        + 'static,
+    D: Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState>,
+    D: ScreencopyHandler,
+    D: 'static,
 {
     fn request(
-        _state: &mut D,
+        &self,
+        state: &mut D,
         _client: &Client,
         manager: &ZwlrScreencopyManagerV1,
         request: <ZwlrScreencopyManagerV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -234,16 +238,17 @@ pub enum ScreencopyFrameState {
     },
 }
 
-impl<D> Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState, D> for ScreencopyManagerState
+impl<D> Dispatch2<ZwlrScreencopyFrameV1, D> for ScreencopyFrameState
 where
-    D: Dispatch<ZwlrScreencopyFrameV1, ScreencopyFrameState> + ScreencopyHandler + 'static,
+    D: ScreencopyHandler,
+    D: 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         frame: &ZwlrScreencopyFrameV1,
         request: <ZwlrScreencopyFrameV1 as wayland_server::Resource>::Request,
-        data: &ScreencopyFrameState,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -251,7 +256,7 @@ where
             return;
         }
 
-        let (info, copied) = match data {
+        let (info, copied) = match self {
             ScreencopyFrameState::Failed => return,
             ScreencopyFrameState::Pending { info, copied } => (info, copied),
         };

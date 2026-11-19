@@ -7,7 +7,6 @@ use tracing::warn;
 
 use crate::{
     decoration::DecorationSurface,
-    delegate_snowcap_decoration,
     hook::add_decoration_pre_commit_hook,
     protocol::{
         self,
@@ -62,7 +61,7 @@ impl SnowcapDecorationHandler for State {
         }
 
         if let Some(dmabuf_hook) = self.pinnacle.dmabuf_hooks.remove(surface.wl_surface()) {
-            compositor::remove_pre_commit_hook(surface.wl_surface(), dmabuf_hook);
+            compositor::remove_pre_commit_hook(surface.wl_surface(), &dmabuf_hook);
         }
 
         let decoration_surface = DecorationSurface::new(surface);
@@ -126,4 +125,3 @@ impl SnowcapDecorationHandler for State {
     }
 }
 
-delegate_snowcap_decoration!(State);

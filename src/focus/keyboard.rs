@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use smithay::{
+    backend::input::InputTime,
     backend::input::KeyState,
     desktop::{LayerSurface, PopupKind, WindowSurface},
     input::{
@@ -71,7 +72,7 @@ impl KeyboardTarget<State> for KeyboardFocusTarget {
         key: KeysymHandle<'_>,
         state: KeyState,
         serial: Serial,
-        time: u32,
+        time: InputTime,
     ) {
         match self {
             KeyboardFocusTarget::Window(window) => {
@@ -211,7 +212,7 @@ impl KeyboardTarget<State> for WindowElement {
         key: KeysymHandle<'_>,
         key_state: KeyState,
         serial: Serial,
-        time: u32,
+        time: InputTime,
     ) {
         match self.underlying_surface() {
             WindowSurface::Wayland(toplevel) => {

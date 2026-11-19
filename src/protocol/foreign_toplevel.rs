@@ -5,6 +5,7 @@
 use std::collections::{HashMap, hash_map::Entry};
 
 use smithay::{
+    wayland::{Dispatch2, GlobalDispatch2},
     desktop::WindowSurface,
     output::{Output, WeakOutput},
     reexports::{
@@ -67,7 +68,7 @@ impl ForeignToplevelManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
         D: GlobalDispatch<ZwlrForeignToplevelManagerV1, ForeignToplevelGlobalData>
-            + Dispatch<ZwlrForeignToplevelManagerV1, ()>
+            + Dispatch<ZwlrForeignToplevelManagerV1, ForeignToplevelManagerUserData>
             + 'static,
         F: Fn(&Client) -> bool + Send + Sync + 'static,
     {
@@ -364,10 +365,14 @@ impl ToplevelData {
         client: &Client,
         manager: &ZwlrForeignToplevelManagerV1,
     ) where
-        D: Dispatch<ZwlrForeignToplevelHandleV1, ()> + 'static,
+        D: Dispatch<ZwlrForeignToplevelHandleV1, ForeignToplevelHandleUserData> + 'static,
     {
         let toplevel = client
-            .create_resource::<ZwlrForeignToplevelHandleV1, _, D>(display, manager.version(), ())
+            .create_resource::<ZwlrForeignToplevelHandleV1, _, D>(
+                display,
+                manager.version(),
+                ForeignToplevelHandleUserData,
+            )
             .unwrap();
         manager.toplevel(&toplevel);
 
@@ -403,23 +408,30 @@ impl ToplevelData {
     }
 }
 
-impl<D> GlobalDispatch<ZwlrForeignToplevelManagerV1, ForeignToplevelGlobalData, D>
-    for ForeignToplevelManagerState
+/// User data for manager objects (must be a type this crate owns).
+#[derive(Debug, Clone, Copy)]
+pub struct ForeignToplevelManagerUserData;
+
+/// User data for per-toplevel handle objects.
+#[derive(Debug, Clone, Copy)]
+pub struct ForeignToplevelHandleUserData;
+
+impl<D> GlobalDispatch2<ZwlrForeignToplevelManagerV1, D> for ForeignToplevelGlobalData
 where
-    D: GlobalDispatch<ZwlrForeignToplevelManagerV1, ForeignToplevelGlobalData>
-        + Dispatch<ZwlrForeignToplevelManagerV1, ()>
-        + Dispatch<ZwlrForeignToplevelHandleV1, ()>
-        + ForeignToplevelHandler,
+    D: Dispatch<ZwlrForeignToplevelManagerV1, ForeignToplevelManagerUserData>
+        + Dispatch<ZwlrForeignToplevelHandleV1, ForeignToplevelHandleUserData>
+        + ForeignToplevelHandler
+        + 'static,
 {
     fn bind(
+        &self,
         state: &mut D,
         handle: &DisplayHandle,
         client: &Client,
         resource: wayland_server::New<ZwlrForeignToplevelManagerV1>,
-        _global_data: &ForeignToplevelGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
-        let manager = data_init.init(resource, ());
+        let manager = data_init.init(resource, ForeignToplevelManagerUserData);
 
         let state = state.foreign_toplevel_manager_state();
 
@@ -430,21 +442,21 @@ where
         state.instances.push(manager);
     }
 
-    fn can_view(client: Client, global_data: &ForeignToplevelGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<ZwlrForeignToplevelManagerV1, (), D> for ForeignToplevelManagerState
+impl<D> Dispatch2<ZwlrForeignToplevelManagerV1, D> for ForeignToplevelManagerUserData
 where
-    D: Dispatch<ZwlrForeignToplevelManagerV1, ()> + ForeignToplevelHandler,
+    D: ForeignToplevelHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ZwlrForeignToplevelManagerV1,
         request: <ZwlrForeignToplevelManagerV1 as Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -462,10 +474,10 @@ where
     }
 
     fn destroyed(
+        &self,
         state: &mut D,
         _client: ClientId,
         resource: &ZwlrForeignToplevelManagerV1,
-        _data: &(),
     ) {
         state
             .foreign_toplevel_manager_state()
@@ -474,16 +486,16 @@ where
     }
 }
 
-impl<D> Dispatch<ZwlrForeignToplevelHandleV1, (), D> for ForeignToplevelManagerState
+impl<D> Dispatch2<ZwlrForeignToplevelHandleV1, D> for ForeignToplevelHandleUserData
 where
-    D: Dispatch<ZwlrForeignToplevelHandleV1, ()> + ForeignToplevelHandler,
+    D: ForeignToplevelHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ZwlrForeignToplevelHandleV1,
         request: <ZwlrForeignToplevelHandleV1 as Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -523,10 +535,10 @@ where
     }
 
     fn destroyed(
+        &self,
         state: &mut D,
         _client: ClientId,
         resource: &ZwlrForeignToplevelHandleV1,
-        _data: &(),
     ) {
         for data in state
             .foreign_toplevel_manager_state()

@@ -1,6 +1,7 @@
 #[cfg(feature = "testing")]
 use smithay::backend::renderer::test::DummyRenderer;
 use smithay::{
+    utils::user_data::UserDataMap,
     backend::renderer::{
         RendererSuper,
         element::{self, Element, RenderElement, texture::TextureRenderElement},
@@ -76,8 +77,9 @@ impl RenderElement<GlesRenderer> for CommonTextureRenderElement {
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
     ) -> Result<(), <GlesRenderer as RendererSuper>::Error> {
-        RenderElement::<GlesRenderer>::draw(&self.0, frame, src, dst, damage, opaque_regions)
+        RenderElement::<GlesRenderer>::draw(&self.0, frame, src, dst, damage, opaque_regions, cache)
     }
 
     fn underlying_storage(
@@ -97,6 +99,7 @@ impl<'a> RenderElement<UdevRenderer<'a>> for CommonTextureRenderElement {
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
     ) -> Result<(), <UdevRenderer<'a> as RendererSuper>::Error> {
         RenderElement::<GlesRenderer>::draw(
             &self.0,
@@ -105,6 +108,7 @@ impl<'a> RenderElement<UdevRenderer<'a>> for CommonTextureRenderElement {
             dst,
             damage,
             opaque_regions,
+            cache,
         )?;
         Ok(())
     }

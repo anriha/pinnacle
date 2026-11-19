@@ -16,6 +16,8 @@ use anyhow::{Context, anyhow, ensure};
 use drm::{create_drm_mode, refresh_interval};
 use smithay::{
     backend::{
+        drm::color::{Colorspace, ConnectorColorState, HdrOutputMetadata},
+        renderer::gles::GlesTexProgram,
         SwapBuffersError,
         allocator::{
             Buffer, Fourcc,
@@ -77,6 +79,7 @@ use smithay_drm_extras::drm_scanner::{DrmScanEvent, DrmScanner};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
+    render::AsGlesRenderer,
     api::signal::Signal,
     backend::Backend,
     config::ConnectorSavedState,
@@ -694,17 +697,28 @@ fn get_surface_dmabuf_feedback(
     let builder = DmabufFeedbackBuilder::new(primary_gpu.dev_id(), primary_formats);
     let render_feedback = builder
         .clone()
-        .add_preference_tranche(render_node.dev_id(), None, render_formats.clone())
+        .add_preference_tranche(
+            render_node.dev_id(),
+            zwp_linux_dmabuf_feedback_v1::TrancheFlags::empty(),
+            render_formats.clone(),
+            1..=4,
+        )
         .build()
         .ok()?; // INFO: this is an unwrap in Anvil, does it matter?
 
     let scanout_feedback = builder
         .add_preference_tranche(
             surface.device_fd().dev_id().ok()?, // INFO: this is an unwrap in Anvil, does it matter?
-            Some(zwp_linux_dmabuf_feedback_v1::TrancheFlags::Scanout),
+            zwp_linux_dmabuf_feedback_v1::TrancheFlags::Scanout,
             planes_formats,
+            1..=4,
         )
-        .add_preference_tranche(render_node.dev_id(), None, render_formats)
+        .add_preference_tranche(
+            render_node.dev_id(),
+            zwp_linux_dmabuf_feedback_v1::TrancheFlags::empty(),
+            render_formats,
+            1..=4,
+        )
         .build()
         .ok()?; // INFO: this is an unwrap in Anvil, does it matter?
 
@@ -767,6 +781,22 @@ struct RenderSurface {
     render_state: RenderState,
     screencopy_commit_state: ScreencopyCommitState,
 
+    /// Whether this output is driven in BT.2020/PQ HDR mode.
+    hdr: bool,
+    /// Luminance 1.0 sRGB maps to on this output, in nits.
+    hdr_ref_white: f64,
+    /// Lazily compiled shader that converts sRGB content into the HDR signal.
+    hdr_program: Option<GlesTexProgram>,
+    /// One-shot / rate-limited pre-scanout frame dumps (`PINNACLE_HDR_DUMP`).
+    hdr_dump: Option<crate::hdr::FrameDump>,
+    /// Whether to log what the primary plane did (`PINNACLE_HDR_LOG`).
+    hdr_log: bool,
+    /// Last scanout decision logged, so the log shows transitions only.
+    hdr_scanout: Option<String>,
+    /// Last value of the passthrough gate, so clients are told on transitions only.
+    hdr_gate: Option<bool>,
+    /// Last set of surfaces marked as already encoded, for the diagnostics.
+    hdr_encoded_signature: Option<String>,
     previous_gamma: Option<[Box<[u16]>; 3]>,
     pending_gamma_change: PendingGammaChange,
 
@@ -1049,6 +1079,8 @@ impl Udev {
             device_id: node,
         });
 
+        let mut hdr = crate::hdr::hdr_requested_for(&output);
+
         let drm_output = {
             let planes = surface.planes().clone();
 
@@ -1069,6 +1101,42 @@ impl Udev {
             }
         };
 
+        let hdr_ref_white = crate::hdr::ref_white();
+
+        if hdr {
+            let max_luminance = crate::hdr::max_luminance();
+            let color_state = ConnectorColorState {
+                colorspace: Colorspace::Bt2020Rgb,
+                hdr_metadata: Some(HdrOutputMetadata::pq_bt2020(
+                    max_luminance,
+                    50,
+                    max_luminance,
+                    400,
+                )),
+                max_bpc: Some(10),
+            };
+            let staged = drm_output.with_compositor(|compositor| {
+                compositor.use_color_state(color_state)
+            });
+            match staged {
+                Ok(()) => info!(
+                    "Driving {} in BT.2020/PQ HDR mode: {} nits SDR white, {} nit peak",
+                    output.name(),
+                    hdr_ref_white,
+                    max_luminance
+                ),
+                Err(err) => {
+                    // Signalling SDR while the compositor converts content to PQ would
+                    // look catastrophically wrong, so fall back to the SDR path.
+                    warn!(
+                        "Connector {} does not accept HDR state ({err}), staying SDR",
+                        output.name()
+                    );
+                    hdr = false;
+                }
+            }
+        }
+
         let dmabuf_feedback = drm_output.with_compositor(|compositor| {
             get_surface_dmabuf_feedback(
                 self.primary_gpu,
@@ -1085,6 +1153,14 @@ impl Udev {
             dmabuf_feedback,
             render_state: RenderState::Idle,
             screencopy_commit_state: ScreencopyCommitState::default(),
+            hdr,
+            hdr_ref_white,
+            hdr_program: None,
+            hdr_dump: crate::hdr::FrameDump::from_env(),
+            hdr_log: crate::hdr::verbose(),
+            hdr_scanout: None,
+            hdr_gate: None,
+            hdr_encoded_signature: None,
             previous_gamma: None,
             pending_gamma_change: PendingGammaChange::Idle,
             frame_clock: FrameClock::new(Some(refresh_interval(drm_mode))),
@@ -1471,6 +1547,12 @@ impl Udev {
 
         let scale = output.current_scale().fractional_scale();
 
+        // Whether this frame can go to the panel as-is. Computed before the
+        // element list because it decides whether the cursor may be an element at
+        // all: any second element forces composition, and a composited frame is a
+        // frame that went through the convert shader.
+        let hdr_passthrough = surface.hdr && hdr_content_fullscreen(pinnacle, output);
+
         let (pointer_render_elements, cursor_ids) = pointer_render_elements(
             pointer_location - output_geo.loc.to_f64(),
             scale,
@@ -1478,11 +1560,13 @@ impl Udev {
             &mut pinnacle.cursor_state,
             &pinnacle.clock,
         );
-        output_render_elements.extend(
-            pointer_render_elements
-                .into_iter()
-                .map(OutputRenderElement::from),
-        );
+        if !hdr_passthrough {
+            output_render_elements.extend(
+                pointer_render_elements
+                    .into_iter()
+                    .map(OutputRenderElement::from),
+            );
+        }
 
         if should_blank {
             output.with_state_mut(|state| {
@@ -1541,9 +1625,192 @@ impl Udev {
             CLEAR_COLOR_LOCKED
         };
 
+        // A frame whose topmost element is the HDR client's own buffer covering
+        // the whole output is already in the output's encoding, so a copy is the
+        // correct conversion and running the SDR shader over it would encode it
+        // twice. This is what makes fullscreen HDR content look right even when
+        // the primary plane cannot scan the client's buffer out (an fp16
+        // swapchain, for instance).
+        //
+        // Elements *below* it do not matter: an opaque element covering the output
+        // culls everything underneath, and real frames are never a single element
+        // (a tiling layout keeps every window on the output, plus layer surfaces).
+        let output_physical = smithay::utils::Rectangle::from_size(
+            output_geo.size.to_physical_precise_round(scale),
+        );
+        let first_element_geometry = output_render_elements
+            .first()
+            .map(|element| element.geometry(smithay::utils::Scale::from(scale)));
+        let hdr_passthrough_frame = hdr_passthrough
+            && output_render_elements
+                .first()
+                .is_some_and(|element| matches!(element, OutputRenderElement::Surface(_)))
+            && first_element_geometry == Some(output_physical);
+
+        // Elements whose client already outputs this output's encoding. They are
+        // drawn as a copy instead of through the conversion shader, which is what
+        // makes a windowed or tiled HDR client look right: without this the whole
+        // frame is one encoding and an HDR client inside it gets encoded twice.
+        //
+        // The description is looked up per surface, not per window. Clients attach it
+        // to the surface they render into, which is not always the window's own
+        // surface: Wine puts it on the swapchain's surface, so a game negotiated as
+        // PQ reported nothing at the toplevel and was converted as if it were SDR.
+        // A surface without a description inherits the nearest ancestor's.
+        //
+        // The traversal below only clones proxies. That is deliberate: it holds the
+        // user-data mutex of every surface in the subtree, so a `with_states`,
+        // `get_parent` or `get_surface_description` call inside it takes the same
+        // mutex again and deadlocks the compositor with the display frozen mid-frame.
+        // The first version of this code did that and hung the machine. All the
+        // description lookups happen after the traversal has returned.
+        let already_encoded: Vec<smithay::backend::renderer::element::Id> = if surface.hdr {
+            let mut ids = Vec::new();
+            let mut marked = Vec::new();
+            let mut rejected = Vec::new();
+            let mut undescribed = Vec::new();
+            let mut tree = Vec::new();
+            for window in pinnacle.space.elements_for_output(output) {
+                let class = window.class().unwrap_or_else(|| "?".to_string());
+                let Some(toplevel) = window.toplevel() else {
+                    if surface.hdr_log {
+                        undescribed.push(format!("{class}:x11"));
+                    }
+                    continue;
+                };
+                let root = toplevel.wl_surface().clone();
+                tree.clear();
+                smithay::wayland::compositor::with_surface_tree_downward(
+                    &root,
+                    (),
+                    |_, _, _| smithay::wayland::compositor::TraversalAction::DoChildren(()),
+                    |tree_surface, _, _| tree.push(tree_surface.clone()),
+                    |_, _, _| true,
+                );
+                for tree_surface in &tree {
+                    let Some(description) = crate::hdr::surface_description_in_tree(tree_surface)
+                    else {
+                        if surface.hdr_log {
+                            let id =
+                                smithay::reexports::wayland_server::Resource::id(tree_surface)
+                                    .protocol_id();
+                            undescribed.push(format!("{id}:{class}:none"));
+                        }
+                        continue;
+                    };
+                    if !crate::hdr::description_matches_output_encoding(&description) {
+                        if surface.hdr_log {
+                            let id =
+                                smithay::reexports::wayland_server::Resource::id(tree_surface)
+                                    .protocol_id();
+                            rejected.push(format!(
+                                "{id}:{class}:{}",
+                                crate::hdr::description_tag(&description)
+                            ));
+                        }
+                        continue;
+                    }
+                    if surface.hdr_log {
+                        let id = smithay::reexports::wayland_server::Resource::id(tree_surface)
+                            .protocol_id();
+                        marked.push(format!("{id}:{class}"));
+                    }
+                    ids.push(smithay::backend::renderer::element::Id::from_wayland_resource(
+                        tree_surface,
+                    ));
+                }
+            }
+            if surface.hdr_log {
+                let signature = format!(
+                    "{}|{}|{}",
+                    marked.join(","),
+                    rejected.join(","),
+                    undescribed.join(",")
+                );
+                if surface.hdr_encoded_signature.as_deref() != Some(&signature) {
+                    info!(
+                        "{}: already encoded [{}] other descriptions [{}] no description [{}]",
+                        output.name(),
+                        marked.join(","),
+                        rejected.join(","),
+                        undescribed.join(","),
+                    );
+                    surface.hdr_encoded_signature = Some(signature);
+                }
+            }
+            ids
+        } else {
+            Vec::new()
+        };
+        let already_encoded_count = already_encoded.len();
+        // The geometry of each matching element, so the log says whether the marked
+        // element is the client's picture or a small overlay that happens to carry
+        // the description.
+        let matching_geometry = output_render_elements
+            .iter()
+            .filter(|element| matches!(element, OutputRenderElement::Surface(_)))
+            .filter(|element| already_encoded.iter().any(|known| element.id() == known))
+            .map(|element| {
+                let geometry = element.geometry(smithay::utils::Scale::from(scale));
+                format!(
+                    "{}x{}+{}+{}",
+                    geometry.size.w, geometry.size.h, geometry.loc.x, geometry.loc.y
+                )
+            })
+            .collect::<Vec<_>>();
+        let matching_elements = matching_geometry.len();
+
+        {
+            // Set on every output, empty or not, so a list from another output's
+            // frame can never leak into this one.
+            renderer
+                .as_gles_renderer()
+                .set_already_encoded_elements(already_encoded);
+        }
+
+        if surface.hdr {
+            let gles = renderer.as_gles_renderer();
+            if surface.hdr_program.is_none() {
+                match gles.compile_custom_texture_shader(
+                    crate::hdr::texture_shader(surface.hdr_ref_white),
+                    &[],
+                ) {
+                    Ok(program) => surface.hdr_program = Some(program),
+                    Err(err) => {
+                        warn!("Failed to compile the HDR shader, falling back to SDR: {err}");
+                        surface.hdr = false;
+                    }
+                }
+            }
+
+            if let Some(program) = surface.hdr_program.clone() {
+                let ref_white = surface.hdr_ref_white;
+                let gles = renderer.as_gles_renderer();
+                if !hdr_passthrough_frame {
+                    gles.set_default_tex_program_override(Some((program, Vec::new())));
+                }
+                // Covers `Frame::clear` and solid elements. The clear colour is handed
+                // over unconverted on purpose: Smithay applies the transform to it, so
+                // converting it here as well would encode it twice.
+                gles.set_solid_color_transform(Some(Box::new(move |color| {
+                    crate::hdr::premultiplied_srgb_to_pq(color, ref_white)
+                })));
+            }
+        }
+
         // No overlay planes cuz they wonk
         let mut frame_flags =
             FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+
+        if surface.hdr {
+            // Cursor and overlay planes bypass the convert shader entirely, so their
+            // pixels would be read as PQ. Only the primary plane may scan out, and
+            // only when the fullscreen window is HDR content itself.
+            frame_flags.remove(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
+            if !hdr_content_fullscreen(pinnacle, output) {
+                frame_flags.remove(FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT_ANY);
+            }
+        }
 
         if pinnacle.config.debug.disable_cursor_plane_scanout {
             frame_flags.remove(FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT);
@@ -1610,8 +1877,85 @@ impl Udev {
             frame_flags,
         );
 
+        // Dump before the conversion hooks are cleared below: the dump re-renders
+        // the elements, and with the hooks already gone it would show pixels the
+        // panel never received.
+        if surface.hdr
+            && let Ok(res) = &render_frame_result
+            && surface.hdr_dump.as_mut().is_some_and(|dump| dump.poll())
+            && let Some(path) = surface.hdr_dump.as_ref().map(|d| d.path_for(&output.name()))
+        {
+            let scale = output.current_scale().fractional_scale();
+            let transform = output.current_transform();
+            let physical = output_geo.size.to_physical_precise_round(scale);
+            let size = transform.transform_size(physical);
+            match dump_hdr_frame(&mut renderer, res, &path, size, transform, scale) {
+                Ok(()) => info!("wrote HDR framebuffer dump {}", path.display()),
+                Err(err) => warn!("HDR framebuffer dump failed: {err}"),
+            }
+        }
+
+        if surface.hdr {
+            let gles = renderer.as_gles_renderer();
+            gles.set_default_tex_program_override(None);
+            gles.set_solid_color_transform(None);
+            gles.set_already_encoded_elements(Vec::new());
+        }
+
+        let hdr_gate = hdr_passthrough;
+
+        if surface.hdr && surface.hdr_gate != Some(hdr_gate) {
+            // The answer to "what does this output prefer" changed, so tell the
+            // clients on it: a player that asked before it was mapped gets one
+            // chance to switch to PQ instead of tone mapping to SDR.
+            surface.hdr_gate = Some(hdr_gate);
+            if surface.hdr_log {
+                info!("{}: passthrough gate is now {hdr_gate}", output.name());
+            }
+            pinnacle.update_preferred_descriptions(output);
+        }
+
         let failed = match render_frame_result {
             Ok(res) => {
+                if surface.hdr && surface.hdr_log {
+                    // The only honest answer to "is the passthrough happening": a
+                    // `Swapchain` primary plane means the frame went through the
+                    // convert shader, an `Element` means the client's own buffer
+                    // was scanned out. The element list decides which of the two is
+                    // possible at all, so it is logged with the decision, on change.
+                    let kind = match &res.primary_element {
+                        PrimaryPlaneElement::Element(_) => "direct scanout of the client buffer",
+                        PrimaryPlaneElement::Swapchain(_) => "composited through the HDR shader",
+                    };
+                    let elements = output_render_elements
+                        .iter()
+                        .map(|element| match element {
+                            OutputRenderElement::Surface(_) => "surface",
+                            OutputRenderElement::Pointer(_) => "pointer",
+                            OutputRenderElement::Snapshot(_) => "snapshot",
+                            OutputRenderElement::SolidColor(_) => "solid",
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let count = output_render_elements.len();
+                    let framebuffer = format!("{:?}", surface.drm_output.format());
+                    let signature = format!(
+                        "{kind}|{elements}|{hdr_gate}|{hdr_passthrough_frame}"
+                    );
+                    if surface.hdr_scanout.as_deref() != Some(&signature) {
+                        info!(
+                            "{}: primary plane {kind} ([{elements}] {count} elements, \
+                             top {first_element_geometry:?} of {output_physical:?}, gate {hdr_gate}, \
+                             client buffer passed through {hdr_passthrough_frame}, \
+                             {already_encoded_count} surfaces marked, {matching_elements} elements in frame, \
+                             matched [{}],                              framebuffer {framebuffer})",
+                            output.name(),
+                            matching_geometry.join(","),
+                        );
+                        surface.hdr_scanout = Some(signature);
+                    }
+                }
+
                 if res.needs_sync()
                     && let PrimaryPlaneElement::Swapchain(element) = &res.primary_element
                     && let Err(err) = element.sync.wait()
@@ -1853,6 +2197,98 @@ fn render_surface_for_output<'a>(
 
 // FIXME: damage is completely wrong lol, totally didn't test that
 // Use an OutputDamageTracker or something
+/// Whether the output shows a fullscreen window whose client content is HDR.
+///
+/// Direct primary-plane scanout skips the convert shader, so it is only correct
+/// for BT.2020/PQ content; SDR content must be composited through the shader.
+fn hdr_content_fullscreen(pinnacle: &Pinnacle, output: &Output) -> bool {
+    use smithay::wayland::color::management::get_surface_description;
+
+    // Must be a fullscreen window *on this output*: taking the first fullscreen
+    // window in the space would let a fullscreen window on another monitor veto
+    // passthrough here.
+    let Some(window) = pinnacle.space.elements().find(|window| {
+        window.with_state(|state| state.layout_mode.is_fullscreen())
+            && pinnacle
+                .space
+                .outputs_for_element(window)
+                .iter()
+                .any(|o| o == output)
+    }) else {
+        return false;
+    };
+
+    let Some(toplevel) = window.toplevel() else {
+        return false;
+    };
+
+    get_surface_description(toplevel.wl_surface())
+        .0
+        .is_some_and(|description| description.is_hdr())
+}
+
+
+
+/// Write the exact pixels this frame is about to send to KMS as a PPM.
+///
+/// Debug aid for the on-glass checkpoints: the dump is the compositor's output
+/// before the connector's own processing, so it isolates "what we signalled"
+/// from "what the panel did with it". Enabled with `PINNACLE_HDR_DUMP=<dir>`.
+fn dump_hdr_frame<'a>(
+    renderer: &mut UdevRenderer<'a>,
+    res: &UdevRenderFrameResult<'a>,
+    path: &std::path::Path,
+    size: smithay::utils::Size<i32, smithay::utils::Physical>,
+    transform: smithay::utils::Transform,
+    scale: f64,
+) -> anyhow::Result<()> {
+    use smithay::backend::allocator::Fourcc;
+    use smithay::backend::renderer::gles::GlesRenderbuffer;
+    use smithay::utils::Buffer as BufferCoords;
+
+    let buffer_size = size.to_logical(1).to_buffer(1, transform);
+    let mut offscreen: GlesRenderbuffer = renderer.create_buffer(Fourcc::Abgr8888, buffer_size)?;
+    let mut framebuffer = renderer.bind(&mut offscreen)?;
+
+    let _ = res.blit_frame_result(
+        size,
+        transform,
+        scale,
+        renderer,
+        &mut framebuffer,
+        [smithay::utils::Rectangle::from_size(size)],
+        Vec::new(),
+    )?;
+
+    let region = smithay::utils::Rectangle::<i32, BufferCoords>::from_size(buffer_size);
+    let mapping = renderer.copy_framebuffer(&framebuffer, region, Fourcc::Abgr8888)?;
+    let data = renderer.map_texture(&mapping)?;
+
+    let width = buffer_size.w as usize;
+    let height = buffer_size.h as usize;
+    let stride = width * 4;
+    if data.len() < stride * height {
+        anyhow::bail!("short readback: {} bytes for {width}x{height}", data.len());
+    }
+
+    write_ppm(path, width, height, data)?;
+    Ok(())
+}
+
+
+/// Write `width` x `height` pixels of RGBA (R in the first byte) as a binary PPM.
+fn write_ppm(path: &std::path::Path, width: usize, height: usize, rgba: &[u8]) -> std::io::Result<()> {
+    let stride = width * 4;
+    let mut out = Vec::with_capacity(width * height * 3 + 32);
+    out.extend_from_slice(format!("P6\n{width} {height}\n255\n").as_bytes());
+    for row in rgba.chunks_exact(stride).take(height) {
+        for px in row.chunks_exact(4) {
+            out.extend_from_slice(&px[0..3]);
+        }
+    }
+    std::fs::write(path, out)
+}
+
 fn handle_pending_screencopy<'a>(
     renderer: &mut UdevRenderer<'a>,
     output: &Output,
@@ -2152,4 +2588,22 @@ fn should_use_drm_device<P: AsRef<Path>>(device_path: P) -> bool {
     }
 
     true
+}
+
+#[cfg(test)]
+mod hdr_dump_tests {
+    use super::write_ppm;
+
+    #[test]
+    fn ppm_header_and_pixels() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("pinnacle-hdr-dump-test.ppm");
+        // 2x1: red, green
+        let rgba = [255u8, 0, 0, 255, 0, 255, 0, 255];
+        write_ppm(&path, 2, 1, &rgba).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[..11], b"P6\n2 1\n255\n");
+        assert_eq!(&bytes[11..], &[255, 0, 0, 0, 255, 0]);
+        let _ = std::fs::remove_file(path);
+    }
 }

@@ -1,4 +1,5 @@
 use smithay::{
+    utils::user_data::UserDataMap,
     backend::renderer::{
         Renderer,
         element::{Element, Id, RenderElement},
@@ -53,6 +54,7 @@ impl<R: Renderer> RenderElement<R> for BufferDamageElement {
         _dst: Rectangle<i32, Physical>,
         _damage: &[Rectangle<i32, Physical>],
         _opaque_regions: &[Rectangle<i32, Physical>],
+        _cache: Option<&UserDataMap>,
     ) -> Result<(), <R>::Error> {
         Ok(())
     }

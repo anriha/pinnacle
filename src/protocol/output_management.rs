@@ -21,6 +21,7 @@ use tracing::error;
 
 use smithay::{
     output::Mode,
+    wayland::{Dispatch2, GlobalDispatch2},
     reexports::{
         wayland_protocols_wlr::output_management::v1::server::{
             zwlr_output_configuration_v1::ZwlrOutputConfigurationV1,
@@ -36,6 +37,22 @@ use smithay::{
 use crate::state::WithState;
 
 const VERSION: u32 = 4;
+
+/// User data for manager objects (must be a type this crate owns).
+#[derive(Debug, Clone, Copy)]
+pub struct OutputManagerUserData;
+
+/// User data for a wlr output head: the head's [`Output`].
+#[derive(Debug, Clone)]
+pub struct OutputHeadData(pub Output);
+
+/// User data for a wlr output mode: the mode itself.
+#[derive(Debug, Clone, Copy)]
+pub struct OutputModeData(pub Mode);
+
+/// User data for the per-head configuration object.
+#[derive(Debug, Default)]
+pub struct PendingHeadConfigurationData(pub Mutex<PendingOutputHeadConfiguration>);
 
 pub struct OutputManagementManagerState {
     display_handle: DisplayHandle,
@@ -117,8 +134,8 @@ impl OutputManagementManagerState {
     /// [`OutputManagementManagerState::update`] needs to be called afterwards to apply the new state.
     pub fn add_head<D>(&mut self, output: &Output)
     where
-        D: Dispatch<ZwlrOutputHeadV1, Output>
-            + Dispatch<ZwlrOutputModeV1, Mode>
+        D: Dispatch<ZwlrOutputHeadV1, OutputHeadData>
+            + Dispatch<ZwlrOutputModeV1, OutputModeData>
             + OutputManagementHandler
             + 'static,
     {
@@ -163,8 +180,8 @@ impl OutputManagementManagerState {
     /// [`OutputManagementManagerState::update`] needs to be called afterwards to apply the new state.
     pub fn set_head_enabled<D>(&mut self, output: &Output, enabled: bool)
     where
-        D: Dispatch<ZwlrOutputHeadV1, Output>
-            + Dispatch<ZwlrOutputModeV1, Mode>
+        D: Dispatch<ZwlrOutputHeadV1, OutputHeadData>
+            + Dispatch<ZwlrOutputModeV1, OutputModeData>
             + OutputManagementHandler
             + 'static,
     {
@@ -176,14 +193,14 @@ impl OutputManagementManagerState {
 
         for manager_data in self.managers.values_mut() {
             for (head, wlr_modes) in manager_data.heads.iter_mut() {
-                if head.data::<Output>() == Some(output) {
+                if head.data::<OutputHeadData>().is_some_and(|d| &d.0 == output) {
                     head.enabled(enabled as i32);
 
                     if enabled {
                         if let Some(current_mode) = output.current_mode() {
                             let wlr_current_mode = wlr_modes
                                 .iter()
-                                .find(|wlr_mode| wlr_mode.data::<Mode>() == Some(&current_mode));
+                                .find(|wlr_mode| wlr_mode.data::<OutputModeData>().is_some_and(|d| d.0 == current_mode));
                             if let Some(wlr_current_mode) = wlr_current_mode {
                                 head.current_mode(wlr_current_mode);
                             } else {
@@ -225,8 +242,8 @@ impl OutputManagementManagerState {
     /// This needs to be called whenever output state changes to notify clients of the new state.
     pub fn update<D>(&mut self)
     where
-        D: Dispatch<ZwlrOutputHeadV1, Output>
-            + Dispatch<ZwlrOutputModeV1, Mode>
+        D: Dispatch<ZwlrOutputHeadV1, OutputHeadData>
+            + Dispatch<ZwlrOutputModeV1, OutputModeData>
             + OutputManagementHandler
             + 'static,
     {
@@ -237,7 +254,7 @@ impl OutputManagementManagerState {
             for data in self.managers.values_mut() {
                 let heads = data.heads.keys().cloned().collect::<Vec<_>>();
                 for head in heads {
-                    if head.data::<Output>() == Some(&output) {
+                    if head.data::<OutputHeadData>().is_some_and(|d| d.0 == output) {
                         let modes = data.heads.remove(&head);
                         if let Some(modes) = modes {
                             for mode in modes {
@@ -259,14 +276,14 @@ impl OutputManagementManagerState {
 
             for (manager, manager_data) in self.managers.iter_mut() {
                 for (head, wlr_modes) in manager_data.heads.iter_mut() {
-                    if head.data::<Output>() != Some(&output) {
+                    if !head.data::<OutputHeadData>().is_some_and(|d| d.0 == output) {
                         continue;
                     }
 
                     let modes = output.with_state(|state| state.modes.clone());
 
                     wlr_modes.retain(|wlr_mode| {
-                        if !modes.contains(wlr_mode.data::<Mode>().unwrap()) {
+                        if !modes.contains(&wlr_mode.data::<OutputModeData>().unwrap().0) {
                             wlr_mode.finished();
                             false
                         } else {
@@ -277,7 +294,7 @@ impl OutputManagementManagerState {
                     for mode in modes {
                         if !wlr_modes
                             .iter()
-                            .any(|wlr_mode| wlr_mode.data::<Mode>().unwrap() == &mode)
+                            .any(|wlr_mode| wlr_mode.data::<OutputModeData>().unwrap().0 == mode)
                         {
                             let new_wlr_mode = create_mode_for_head::<D>(
                                 head,
@@ -301,7 +318,7 @@ impl OutputManagementManagerState {
                         {
                             let new_cur_wlr_mode = wlr_modes
                                 .iter()
-                                .find(|wlr_mode| wlr_mode.data::<Mode>() == Some(&new_cur_mode));
+                                .find(|wlr_mode| wlr_mode.data::<OutputModeData>().is_some_and(|d| d.0 == new_cur_mode));
 
                             match new_cur_wlr_mode {
                                 Some(new_cur_wlr_mode) => {
@@ -375,8 +392,8 @@ fn advertise_output<D>(
     output: &Output,
 ) -> anyhow::Result<(ZwlrOutputHeadV1, Vec<ZwlrOutputModeV1>)>
 where
-    D: Dispatch<ZwlrOutputHeadV1, Output>
-        + Dispatch<ZwlrOutputModeV1, Mode>
+    D: Dispatch<ZwlrOutputHeadV1, OutputHeadData>
+        + Dispatch<ZwlrOutputModeV1, OutputModeData>
         + OutputManagementHandler
         + 'static,
 {
@@ -387,7 +404,7 @@ where
     let head = client.create_resource::<ZwlrOutputHeadV1, _, D>(
         display,
         manager.version(),
-        output.clone(),
+        OutputHeadData(output.clone()),
     )?;
 
     manager.head(&head);
@@ -426,7 +443,7 @@ where
     if let Some(current_mode) = output.current_mode() {
         let wlr_current_mode = wlr_modes
             .iter()
-            .find(|wlr_mode| wlr_mode.data::<Mode>() == Some(&current_mode));
+            .find(|wlr_mode| wlr_mode.data::<OutputModeData>().is_some_and(|d| d.0 == current_mode));
         if let Some(wlr_current_mode) = wlr_current_mode {
             head.current_mode(wlr_current_mode);
         } else {
@@ -460,14 +477,18 @@ fn create_mode_for_head<D>(
     is_preferred: bool,
 ) -> anyhow::Result<ZwlrOutputModeV1>
 where
-    D: Dispatch<ZwlrOutputHeadV1, Output>
-        + Dispatch<ZwlrOutputModeV1, Mode>
+    D: Dispatch<ZwlrOutputHeadV1, OutputHeadData>
+        + Dispatch<ZwlrOutputModeV1, OutputModeData>
         + OutputManagementHandler
         + 'static,
 {
     let client = head.client().context("head has no owning client")?;
     let wlr_mode =
-        client.create_resource::<ZwlrOutputModeV1, _, D>(display_handle, head.version(), mode)?;
+        client.create_resource::<ZwlrOutputModeV1, _, D>(
+            display_handle,
+            head.version(),
+            OutputModeData(mode),
+        )?;
 
     // do not reorder or wlr-randr gets 0x0 modes
     head.mode(&wlr_mode);
@@ -500,7 +521,7 @@ impl OutputManagementManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
         D: GlobalDispatch<ZwlrOutputManagerV1, OutputManagementGlobalData>
-            + Dispatch<ZwlrOutputManagerV1, ()>
+            + Dispatch<ZwlrOutputManagerV1, OutputManagerUserData>
             + 'static,
         F: Fn(&Client) -> bool + Send + Sync + 'static,
     {
@@ -519,24 +540,22 @@ impl OutputManagementManagerState {
     }
 }
 
-impl<D> GlobalDispatch<ZwlrOutputManagerV1, OutputManagementGlobalData, D>
-    for OutputManagementManagerState
+impl<D> GlobalDispatch2<ZwlrOutputManagerV1, D> for OutputManagementGlobalData
 where
-    D: GlobalDispatch<ZwlrOutputManagerV1, OutputManagementGlobalData>
-        + Dispatch<ZwlrOutputManagerV1, ()>
-        + Dispatch<ZwlrOutputHeadV1, Output>
-        + Dispatch<ZwlrOutputModeV1, Mode>
+    D: Dispatch<ZwlrOutputManagerV1, OutputManagerUserData>
+        + Dispatch<ZwlrOutputHeadV1, OutputHeadData>
+        + Dispatch<ZwlrOutputModeV1, OutputModeData>
         + OutputManagementHandler,
 {
     fn bind(
+        &self,
         state: &mut D,
         handle: &DisplayHandle,
         _client: &Client,
         resource: wayland_server::New<ZwlrOutputManagerV1>,
-        _global_data: &OutputManagementGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
-        let manager = data_init.init(resource, ());
+        let manager = data_init.init(resource, OutputManagerUserData);
 
         let mut outputs = Vec::new();
 
@@ -571,22 +590,22 @@ where
         state.managers.insert(manager, data);
     }
 
-    fn can_view(client: Client, global_data: &OutputManagementGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<ZwlrOutputManagerV1, (), D> for OutputManagementManagerState
+impl<D> Dispatch2<ZwlrOutputManagerV1, D> for OutputManagerUserData
 where
-    D: Dispatch<ZwlrOutputManagerV1, ()> + OutputManagementHandler,
+    D: OutputManagementHandler,
     D: Dispatch<ZwlrOutputConfigurationV1, PendingOutputConfiguration> + OutputManagementHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ZwlrOutputManagerV1,
         request: <ZwlrOutputManagerV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
@@ -658,7 +677,12 @@ where
         }
     }
 
-    fn destroyed(state: &mut D, _client: ClientId, resource: &ZwlrOutputManagerV1, _data: &()) {
+    fn destroyed(
+        &self,
+        state: &mut D,
+        _client: ClientId,
+        resource: &ZwlrOutputManagerV1,
+    ) {
         state
             .output_management_manager_state()
             .managers
@@ -666,16 +690,16 @@ where
     }
 }
 
-impl<D> Dispatch<ZwlrOutputHeadV1, Output, D> for OutputManagementManagerState
+impl<D> Dispatch2<ZwlrOutputHeadV1, D> for OutputHeadData
 where
     D: OutputManagementHandler + 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ZwlrOutputHeadV1,
         request: <ZwlrOutputHeadV1 as Resource>::Request,
-        _data: &Output,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -693,7 +717,12 @@ where
         }
     }
 
-    fn destroyed(state: &mut D, _client: ClientId, resource: &ZwlrOutputHeadV1, _data: &Output) {
+    fn destroyed(
+        &self,
+        state: &mut D,
+        _client: ClientId,
+        resource: &ZwlrOutputHeadV1,
+    ) {
         for manager_data in state
             .output_management_manager_state()
             .managers
@@ -704,16 +733,16 @@ where
     }
 }
 
-impl<D> Dispatch<ZwlrOutputModeV1, Mode, D> for OutputManagementManagerState
+impl<D> Dispatch2<ZwlrOutputModeV1, D> for OutputModeData
 where
     D: OutputManagementHandler + 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ZwlrOutputModeV1,
         request: <ZwlrOutputModeV1 as Resource>::Request,
-        _data: &Mode,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -733,7 +762,12 @@ where
         }
     }
 
-    fn destroyed(state: &mut D, _client: ClientId, resource: &ZwlrOutputModeV1, _data: &Mode) {
+    fn destroyed(
+        &self,
+        state: &mut D,
+        _client: ClientId,
+        resource: &ZwlrOutputModeV1,
+    ) {
         for manager_data in state
             .output_management_manager_state()
             .managers
@@ -746,28 +780,31 @@ where
     }
 }
 
-impl<D> Dispatch<ZwlrOutputConfigurationV1, PendingOutputConfiguration, D>
-    for OutputManagementManagerState
+impl<D> Dispatch2<ZwlrOutputConfigurationV1, D> for PendingOutputConfiguration
 where
-    D: Dispatch<ZwlrOutputManagerV1, ()>
-        + Dispatch<ZwlrOutputConfigurationHeadV1, Mutex<PendingOutputHeadConfiguration>>
+    D: Dispatch<ZwlrOutputConfigurationHeadV1, PendingHeadConfigurationData>
         + OutputManagementHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ZwlrOutputConfigurationV1,
         request: <ZwlrOutputConfigurationV1 as Resource>::Request,
-        pending_data: &PendingOutputConfiguration,
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
         match request {
             zwlr_output_configuration_v1::Request::EnableHead { id, head } => {
                 let config_head =
-                    data_init.init(id, Mutex::new(PendingOutputHeadConfiguration::default()));
+                    data_init.init(
+                        id,
+                        PendingHeadConfigurationData(Mutex::new(
+                            PendingOutputHeadConfiguration::default(),
+                        )),
+                    );
 
-                let mut data = pending_data.inner.lock().unwrap();
+                let mut data = self.inner.lock().unwrap();
 
                 if data.cancelled {
                     return;
@@ -784,7 +821,7 @@ where
                 let manager_serial =
                     manager_for_configuration(state, resource).map(|(_, data)| data.serial);
 
-                if manager_serial != Some(pending_data.serial) {
+                if manager_serial != Some(self.serial) {
                     resource.cancelled();
                     data.cancelled = true;
                     return;
@@ -803,7 +840,7 @@ where
                 }
             }
             zwlr_output_configuration_v1::Request::DisableHead { head } => {
-                let mut data = pending_data.inner.lock().unwrap();
+                let mut data = self.inner.lock().unwrap();
 
                 if data.cancelled {
                     return;
@@ -820,7 +857,7 @@ where
                 let manager_serial =
                     manager_for_configuration(state, resource).map(|(_, data)| data.serial);
 
-                if manager_serial != Some(pending_data.serial) {
+                if manager_serial != Some(self.serial) {
                     resource.cancelled();
                     data.cancelled = true;
                     return;
@@ -840,7 +877,7 @@ where
             }
             req @ (zwlr_output_configuration_v1::Request::Apply
             | zwlr_output_configuration_v1::Request::Test) => {
-                let mut data = pending_data.inner.lock().unwrap();
+                let mut data = self.inner.lock().unwrap();
 
                 if data.cancelled {
                     return;
@@ -857,7 +894,7 @@ where
                 let manager_serial =
                     manager_for_configuration(state, resource).map(|(_, data)| data.serial);
 
-                if manager_serial != Some(pending_data.serial) {
+                if manager_serial != Some(self.serial) {
                     resource.cancelled();
                     data.cancelled = true;
                     return;
@@ -926,10 +963,10 @@ where
     }
 
     fn destroyed(
+        &self,
         state: &mut D,
         _client: ClientId,
         resource: &ZwlrOutputConfigurationV1,
-        _data: &PendingOutputConfiguration,
     ) {
         for output_manager_data in state
             .output_management_manager_state()
@@ -943,23 +980,22 @@ where
     }
 }
 
-impl<D> Dispatch<ZwlrOutputConfigurationHeadV1, Mutex<PendingOutputHeadConfiguration>, D>
-    for OutputManagementManagerState
+impl<D> Dispatch2<ZwlrOutputConfigurationHeadV1, D> for PendingHeadConfigurationData
 where
-    D: Dispatch<ZwlrOutputModeV1, Mode> + 'static,
+    D: Dispatch<ZwlrOutputModeV1, OutputModeData> + 'static,
 {
     fn request(
-        _state: &mut D,
+        &self,
+        state: &mut D,
         _client: &Client,
         resource: &ZwlrOutputConfigurationHeadV1,
         request: <ZwlrOutputConfigurationHeadV1 as Resource>::Request,
-        data: &Mutex<PendingOutputHeadConfiguration>,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
         match request {
             zwlr_output_configuration_head_v1::Request::SetMode { mode } => {
-                let mut data = data.lock().unwrap();
+                let mut data = self.0.lock().unwrap();
                 if data.mode.is_some() {
                     resource.post_error(
                         zwlr_output_configuration_head_v1::Error::AlreadySet,
@@ -979,7 +1015,7 @@ where
                 height,
                 refresh,
             } => {
-                let mut data = data.lock().unwrap();
+                let mut data = self.0.lock().unwrap();
                 if data.mode.is_some() {
                     resource.post_error(
                         zwlr_output_configuration_head_v1::Error::AlreadySet,
@@ -999,7 +1035,7 @@ where
                 data.mode = Some(((width, height).into(), NonZeroU32::new(refresh as u32)));
             }
             zwlr_output_configuration_head_v1::Request::SetPosition { x, y } => {
-                let mut data = data.lock().unwrap();
+                let mut data = self.0.lock().unwrap();
                 if data.position.is_some() {
                     resource.post_error(
                         zwlr_output_configuration_head_v1::Error::AlreadySet,
@@ -1011,7 +1047,7 @@ where
                 data.position = Some((x, y).into());
             }
             zwlr_output_configuration_head_v1::Request::SetTransform { transform } => {
-                let mut data = data.lock().unwrap();
+                let mut data = self.0.lock().unwrap();
                 if data.transform.is_some() {
                     resource.post_error(
                         zwlr_output_configuration_head_v1::Error::AlreadySet,
@@ -1034,7 +1070,7 @@ where
                 data.transform = Some(transform.into());
             }
             zwlr_output_configuration_head_v1::Request::SetScale { scale } => {
-                let mut data = data.lock().unwrap();
+                let mut data = self.0.lock().unwrap();
                 if data.scale.is_some() {
                     resource.post_error(
                         zwlr_output_configuration_head_v1::Error::AlreadySet,
@@ -1046,7 +1082,7 @@ where
                 data.scale = Some(scale);
             }
             zwlr_output_configuration_head_v1::Request::SetAdaptiveSync { state } => {
-                let mut data = data.lock().unwrap();
+                let mut data = self.0.lock().unwrap();
                 if data.adaptive_sync.is_some() {
                     resource.post_error(
                         zwlr_output_configuration_head_v1::Error::AlreadySet,

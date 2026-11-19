@@ -1,5 +1,4 @@
 use smithay::{
-    delegate_foreign_toplevel_list,
     wayland::foreign_toplevel_list::{ForeignToplevelListHandler, ForeignToplevelListState},
 };
 
@@ -10,4 +9,3 @@ impl ForeignToplevelListHandler for State {
         &mut self.pinnacle.foreign_toplevel_list_state
     }
 }
-delegate_foreign_toplevel_list!(State);

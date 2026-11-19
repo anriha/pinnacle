@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use smithay::{
+    wayland::{Dispatch2, GlobalDispatch2},
     reexports::wayland_server::{
         Client, Dispatch, GlobalDispatch, Resource, Weak,
         backend::{ClientId, InvalidId},
@@ -27,39 +28,47 @@ use crate::protocol::snowcap_decoration::{
     SnowcapDecorationState,
 };
 
-impl<D> GlobalDispatch<SnowcapDecorationManagerV1, SnowcapDecorationGlobalData, D>
-    for SnowcapDecorationState
+/// User data for manager objects (must be a type this crate owns).
+#[derive(Debug, Clone, Copy)]
+pub struct SnowcapDecorationManagerUserData;
+
+impl<D> GlobalDispatch2<SnowcapDecorationManagerV1, D> for SnowcapDecorationGlobalData
 where
-    D: Dispatch<SnowcapDecorationManagerV1, ()>,
+    D: Dispatch<SnowcapDecorationManagerV1, SnowcapDecorationManagerUserData>
+        + Dispatch<SnowcapDecorationSurfaceV1, SnowcapDecorationSurfaceUserData>
+        + SnowcapDecorationHandler
+        + XdgShellHandler
+        + 'static,
 {
     fn bind(
+        &self,
         _state: &mut D,
         _handle: &smithay::reexports::wayland_server::DisplayHandle,
         _client: &Client,
         resource: smithay::reexports::wayland_server::New<SnowcapDecorationManagerV1>,
-        _global_data: &SnowcapDecorationGlobalData,
         data_init: &mut smithay::reexports::wayland_server::DataInit<'_, D>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, SnowcapDecorationManagerUserData);
     }
 
-    fn can_view(client: Client, global_data: &SnowcapDecorationGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<SnowcapDecorationManagerV1, (), D> for SnowcapDecorationState
+impl<D> Dispatch2<SnowcapDecorationManagerV1, D> for SnowcapDecorationManagerUserData
 where
-    D: Dispatch<SnowcapDecorationManagerV1, ()>
-        + Dispatch<SnowcapDecorationSurfaceV1, SnowcapDecorationSurfaceUserData>
-        + SnowcapDecorationHandler,
+    D: Dispatch<SnowcapDecorationSurfaceV1, SnowcapDecorationSurfaceUserData>
+        + SnowcapDecorationHandler
+        + XdgShellHandler
+        + 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &SnowcapDecorationManagerV1,
         request: <SnowcapDecorationManagerV1 as smithay::reexports::wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &smithay::reexports::wayland_server::DisplayHandle,
         data_init: &mut smithay::reexports::wayland_server::DataInit<'_, D>,
     ) {
@@ -184,19 +193,16 @@ pub struct SnowcapDecorationSurfaceUserData {
     pub(super) alive_tracker: AtomicBool,
 }
 
-impl<D> Dispatch<SnowcapDecorationSurfaceV1, SnowcapDecorationSurfaceUserData, D>
-    for SnowcapDecorationState
+impl<D> Dispatch2<SnowcapDecorationSurfaceV1, D> for SnowcapDecorationSurfaceUserData
 where
-    D: Dispatch<SnowcapDecorationSurfaceV1, SnowcapDecorationSurfaceUserData>
-        + SnowcapDecorationHandler
-        + XdgShellHandler,
+    D: SnowcapDecorationHandler + XdgShellHandler + 'static,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         deco_surface: &SnowcapDecorationSurfaceV1,
         request: <SnowcapDecorationSurfaceV1 as Resource>::Request,
-        data: &SnowcapDecorationSurfaceUserData,
         _dhandle: &smithay::reexports::wayland_server::DisplayHandle,
         _data_init: &mut smithay::reexports::wayland_server::DataInit<'_, D>,
     ) {
@@ -238,7 +244,7 @@ where
                 });
             }
             snowcap_decoration_surface_v1::Request::GetPopup { popup } => {
-                let Ok(parent_surface) = data.wl_surface.upgrade() else {
+                let Ok(parent_surface) = self.wl_surface.upgrade() else {
                     return;
                 };
 
@@ -271,7 +277,7 @@ where
                 }
             }
             snowcap_decoration_surface_v1::Request::AckConfigure { serial } => {
-                let Ok(surface) = data.wl_surface.upgrade() else {
+                let Ok(surface) = self.wl_surface.upgrade() else {
                     return;
                 };
 
@@ -303,14 +309,14 @@ where
     }
 
     fn destroyed(
+        &self,
         state: &mut D,
         _client: ClientId,
         resource: &SnowcapDecorationSurfaceV1,
-        data: &SnowcapDecorationSurfaceUserData,
     ) {
-        data.alive_tracker.store(false, Ordering::Release);
+        self.alive_tracker.store(false, Ordering::Release);
 
-        let mut decorations = data.decoration_data.known_decorations.lock().unwrap();
+        let mut decorations = self.decoration_data.known_decorations.lock().unwrap();
         if let Some(index) = decorations
             .iter()
             .position(|deco| deco.decoration_surface.id() == resource.id())

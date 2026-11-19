@@ -7,7 +7,6 @@ use smithay::{
         drm::{DrmNode, NodeType},
         renderer::{ImportDma, Renderer, TextureFilter, gles::GlesRenderer},
     },
-    delegate_dmabuf,
     output::Output,
     reexports::{calloop::LoopHandle, wayland_server::protocol::wl_surface::WlSurface},
     wayland::dmabuf::{
@@ -278,7 +277,6 @@ impl DmabufHandler for State {
         }
     }
 }
-delegate_dmabuf!(State);
 
 impl Pinnacle {
     /// Initializes EGL hardware acceleration.

@@ -7,6 +7,7 @@ pub mod decoration;
 pub mod focus;
 pub mod grab;
 pub mod handlers;
+pub mod hdr;
 pub mod hook;
 pub mod input;
 pub mod layout;

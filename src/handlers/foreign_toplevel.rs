@@ -1,7 +1,6 @@
 use smithay::reexports::wayland_server::protocol::{wl_output::WlOutput, wl_surface::WlSurface};
 
 use crate::{
-    delegate_foreign_toplevel,
     protocol::foreign_toplevel::{ForeignToplevelHandler, ForeignToplevelManagerState},
     state::{State, WithState},
 };
@@ -139,4 +138,3 @@ impl ForeignToplevelHandler for State {
         self.schedule_render(&output);
     }
 }
-delegate_foreign_toplevel!(State);

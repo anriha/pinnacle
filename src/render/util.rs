@@ -17,6 +17,7 @@ use smithay::reexports::wayland_server::protocol::wl_shm;
 use smithay::utils::{Buffer, Point, Rectangle};
 use smithay::wayland::shm::with_buffer_contents_mut;
 use smithay::{
+    utils::user_data::UserDataMap,
     backend::renderer::{
         element::RenderElement,
         gles::{GlesRenderer, GlesTexture},
@@ -163,7 +164,7 @@ fn render_elements_to_framebuffer(
 
         if let Some(mut damage) = dst_rect.intersection(dst) {
             damage.loc -= dst.loc;
-            elem.draw(&mut frame, src, dst, &[damage], &[])
+            elem.draw(&mut frame, src, dst, &[damage], &[], None)
                 .context("failed to draw element")?;
         }
     }
@@ -427,7 +428,8 @@ impl<'a, R: Renderer> RenderElement<R> for DynElement<'a, R> {
         dst: Rectangle<i32, Physical>,
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
+        cache: Option<&UserDataMap>,
     ) -> Result<(), <R>::Error> {
-        self.get_ref().draw(frame, src, dst, damage, opaque_regions)
+        self.get_ref().draw(frame, src, dst, damage, opaque_regions, cache)
     }
 }

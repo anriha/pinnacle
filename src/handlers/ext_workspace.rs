@@ -32,4 +32,3 @@ impl ExtWorkspaceHandler for State {
     }
 }
 
-delegate_ext_workspace!(State);

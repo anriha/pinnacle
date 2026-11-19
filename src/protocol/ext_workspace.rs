@@ -6,6 +6,7 @@ use ext_workspace_group_handle_v1::ExtWorkspaceGroupHandleV1;
 use ext_workspace_handle_v1::ExtWorkspaceHandleV1;
 use ext_workspace_manager_v1::ExtWorkspaceManagerV1;
 use smithay::output::Output;
+use smithay::wayland::{Dispatch2, GlobalDispatch2};
 use smithay::reexports::wayland_protocols::ext::workspace::v1::server::{
     ext_workspace_group_handle_v1, ext_workspace_handle_v1, ext_workspace_manager_v1,
 };
@@ -43,6 +44,18 @@ impl Action {
         }
     }
 }
+
+/// User data for manager objects (must be a type this crate owns).
+#[derive(Debug, Clone, Copy)]
+pub struct ExtWorkspaceManagerUserData;
+
+/// User data for workspace handle objects: the manager they were created from.
+#[derive(Debug, Clone)]
+pub struct WorkspaceHandleData(pub ExtWorkspaceManagerV1);
+
+/// User data for workspace group handle objects.
+#[derive(Debug, Clone)]
+pub struct WorkspaceGroupHandleData(pub ExtWorkspaceManagerV1);
 
 pub struct ExtWorkspaceManagerState {
     display: DisplayHandle,
@@ -321,14 +334,14 @@ impl ExtWorkspaceGroupData {
         output: &Output,
     ) -> &ExtWorkspaceGroupHandleV1
     where
-        D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1>,
+        D: Dispatch<ExtWorkspaceGroupHandleV1, WorkspaceGroupHandleData>,
         D: 'static,
     {
         let group = client
             .create_resource::<ExtWorkspaceGroupHandleV1, _, D>(
                 handle,
                 manager.version(),
-                manager.clone(),
+                WorkspaceGroupHandleData(manager.clone()),
             )
             .unwrap();
         manager.workspace_group(&group);
@@ -352,14 +365,14 @@ impl ExtWorkspaceData {
         manager: &ExtWorkspaceManagerV1,
     ) -> &ExtWorkspaceHandleV1
     where
-        D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1>,
+        D: Dispatch<ExtWorkspaceHandleV1, WorkspaceHandleData>,
         D: 'static,
     {
         let workspace = client
             .create_resource::<ExtWorkspaceHandleV1, _, D>(
                 handle,
                 manager.version(),
-                manager.clone(),
+                WorkspaceHandleData(manager.clone()),
             )
             .unwrap();
         manager.workspace(&workspace);
@@ -382,7 +395,7 @@ impl ExtWorkspaceManagerState {
     pub fn new<D, F>(display: &DisplayHandle, filter: F) -> Self
     where
         D: GlobalDispatch<ExtWorkspaceManagerV1, ExtWorkspaceGlobalData>,
-        D: Dispatch<ExtWorkspaceManagerV1, ()>,
+        D: Dispatch<ExtWorkspaceManagerV1, ExtWorkspaceManagerUserData>,
         D: 'static,
         F: for<'c> Fn(&'c Client) -> bool + Send + Sync + 'static,
     {
@@ -399,23 +412,20 @@ impl ExtWorkspaceManagerState {
     }
 }
 
-impl<D> GlobalDispatch<ExtWorkspaceManagerV1, ExtWorkspaceGlobalData, D>
-    for ExtWorkspaceManagerState
+impl<D> GlobalDispatch2<ExtWorkspaceManagerV1, D> for ExtWorkspaceGlobalData
 where
-    D: GlobalDispatch<ExtWorkspaceManagerV1, ExtWorkspaceGlobalData>,
-    D: Dispatch<ExtWorkspaceManagerV1, ()>,
-    D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1>,
+    D: Dispatch<ExtWorkspaceManagerV1, ExtWorkspaceManagerUserData>,
     D: ExtWorkspaceHandler,
 {
     fn bind(
+        &self,
         state: &mut D,
         handle: &DisplayHandle,
         client: &Client,
         resource: New<ExtWorkspaceManagerV1>,
-        _global_data: &ExtWorkspaceGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
-        let manager = data_init.init(resource, ());
+        let manager = data_init.init(resource, ExtWorkspaceManagerUserData);
 
         let state = state.ext_workspace_manager_state();
 
@@ -441,22 +451,21 @@ where
         state.instances.insert(manager, Vec::new());
     }
 
-    fn can_view(client: Client, global_data: &ExtWorkspaceGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<ExtWorkspaceManagerV1, (), D> for ExtWorkspaceManagerState
+impl<D> Dispatch2<ExtWorkspaceManagerV1, D> for ExtWorkspaceManagerUserData
 where
-    D: Dispatch<ExtWorkspaceManagerV1, ()>,
     D: ExtWorkspaceHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ExtWorkspaceManagerV1,
         request: <ExtWorkspaceManagerV1 as Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -496,23 +505,22 @@ where
         }
     }
 
-    fn destroyed(state: &mut D, _client: ClientId, resource: &ExtWorkspaceManagerV1, _data: &()) {
+    fn destroyed(&self, state: &mut D, _client: ClientId, resource: &ExtWorkspaceManagerV1) {
         let state = state.ext_workspace_manager_state();
         state.instances.retain(|x, _| x != resource);
     }
 }
 
-impl<D> Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1, D> for ExtWorkspaceManagerState
+impl<D> Dispatch2<ExtWorkspaceHandleV1, D> for WorkspaceHandleData
 where
-    D: Dispatch<ExtWorkspaceHandleV1, ExtWorkspaceManagerV1>,
     D: ExtWorkspaceHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ExtWorkspaceHandleV1,
         request: <ExtWorkspaceHandleV1 as Resource>::Request,
-        data: &ExtWorkspaceManagerV1,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -529,16 +537,16 @@ where
 
         match request {
             ext_workspace_handle_v1::Request::Activate => {
-                let actions = protocol_state.instances.get_mut(data).unwrap();
+                let actions = protocol_state.instances.get_mut(&self.0).unwrap();
                 actions.push(Action::Activate(workspace));
             }
             ext_workspace_handle_v1::Request::Deactivate => {
-                let actions = protocol_state.instances.get_mut(data).unwrap();
+                let actions = protocol_state.instances.get_mut(&self.0).unwrap();
                 actions.push(Action::Deactivate(workspace));
             }
             ext_workspace_handle_v1::Request::Assign { .. } => (),
             ext_workspace_handle_v1::Request::Remove => {
-                let actions = protocol_state.instances.get_mut(data).unwrap();
+                let actions = protocol_state.instances.get_mut(&self.0).unwrap();
                 actions.push(Action::Remove(workspace));
             }
             ext_workspace_handle_v1::Request::Destroy => (),
@@ -547,10 +555,10 @@ where
     }
 
     fn destroyed(
+        &self,
         state: &mut D,
         _client: ClientId,
         resource: &ExtWorkspaceHandleV1,
-        _data: &ExtWorkspaceManagerV1,
     ) {
         let state = state.ext_workspace_manager_state();
         for data in state.tags.values_mut() {
@@ -559,17 +567,16 @@ where
     }
 }
 
-impl<D> Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1, D> for ExtWorkspaceManagerState
+impl<D> Dispatch2<ExtWorkspaceGroupHandleV1, D> for WorkspaceGroupHandleData
 where
-    D: Dispatch<ExtWorkspaceGroupHandleV1, ExtWorkspaceManagerV1>,
     D: ExtWorkspaceHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ExtWorkspaceGroupHandleV1,
         request: <ExtWorkspaceGroupHandleV1 as Resource>::Request,
-        _data: &ExtWorkspaceManagerV1,
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -592,10 +599,10 @@ where
     }
 
     fn destroyed(
+        &self,
         state: &mut D,
         _client: ClientId,
         resource: &ExtWorkspaceGroupHandleV1,
-        _data: &ExtWorkspaceManagerV1,
     ) {
         let state = state.ext_workspace_manager_state();
         for data in state.tag_groups.values_mut() {

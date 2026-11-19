@@ -24,8 +24,9 @@ use smithay::{
             protocol::{wl_shm, wl_surface::WlSurface},
         },
         winit::{
-            platform::wayland::WindowAttributesExtWayland,
-            window::{Icon, WindowAttributes},
+            icon::{Icon, RgbaIcon},
+            platform::wayland::WindowAttributesWayland,
+            window::WindowAttributes,
         },
     },
     utils::{Rectangle, Transform},
@@ -80,8 +81,14 @@ impl Winit {
     pub(crate) fn try_new(display_handle: DisplayHandle) -> anyhow::Result<UninitBackend<Winit>> {
         let window_attrs = WindowAttributes::default()
             .with_title("Pinnacle")
-            .with_name("pinnacle", "pinnacle")
-            .with_window_icon(Icon::from_rgba(LOGO_BYTES.to_vec(), 64, 64).ok());
+            .with_platform_attributes(Box::new(
+                WindowAttributesWayland::default().with_name("pinnacle", "pinnacle"),
+            ))
+            .with_window_icon(
+                RgbaIcon::new(LOGO_BYTES.to_vec(), 64, 64)
+                    .ok()
+                    .map(Icon::from),
+            );
 
         let (winit_backend, winit_evt_loop) =
             match winit::init_from_attributes::<GlesRenderer>(window_attrs) {

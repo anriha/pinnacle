@@ -570,7 +570,7 @@ impl Pinnacle {
         // TODO: xwayland?
         if let Some(toplevel) = window.toplevel() {
             if let Some(hook) = hook {
-                compositor::remove_pre_commit_hook(toplevel.wl_surface(), hook);
+                compositor::remove_pre_commit_hook(toplevel.wl_surface(), &hook);
             }
             if unmap {
                 self.add_default_dmabuf_pre_commit_hook(toplevel.wl_surface());

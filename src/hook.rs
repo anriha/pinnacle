@@ -358,7 +358,7 @@ impl Pinnacle {
 
         if let Some(prev_hook) = self.dmabuf_hooks.insert(surface.clone(), hook) {
             error!("tried to add dmabuf pre-commit hook when there already was one");
-            compositor::remove_pre_commit_hook(surface, prev_hook);
+            compositor::remove_pre_commit_hook(surface, &prev_hook);
         }
     }
 }

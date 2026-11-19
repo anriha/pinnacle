@@ -77,7 +77,7 @@ impl Drop for DecorationSurfaceInner {
             .take();
 
         if let Some(hook) = hook {
-            compositor::remove_pre_commit_hook(self.surface.wl_surface(), hook);
+            compositor::remove_pre_commit_hook(self.surface.wl_surface(), &hook);
         }
     }
 }

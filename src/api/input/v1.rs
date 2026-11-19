@@ -752,7 +752,11 @@ impl input::v1::input_service_server::InputService for InputService {
                 let _ = device.config_tap_set_drag_enabled(enable);
             }),
             Setting::TapDragLock(enable) => Box::new(move |device| {
-                let _ = device.config_tap_set_drag_lock_enabled(enable);
+                let _ = device.config_tap_set_drag_lock_enabled(if enable {
+                    smithay::reexports::input::DragLockState::EnabledTimeout
+                } else {
+                    smithay::reexports::input::DragLockState::Disabled
+                });
             }),
             Setting::Tap(enable) => Box::new(move |device| {
                 let _ = device.config_tap_set_enabled(enable);

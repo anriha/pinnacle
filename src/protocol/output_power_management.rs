@@ -4,6 +4,7 @@ use std::{
 };
 
 use smithay::{
+    wayland::{Dispatch2, GlobalDispatch2},
     output::{Output, WeakOutput},
     reexports::{
         wayland_protocols_wlr::output_power_management::v1::server::{
@@ -92,43 +93,53 @@ impl OutputPowerManagementState {
     }
 }
 
-impl<D> GlobalDispatch<ZwlrOutputPowerManagerV1, OutputPowerManagementGlobalData, D>
-    for OutputPowerManagementState
+/// User data for manager objects (must be a type this crate owns).
+#[derive(Debug, Clone, Copy)]
+pub struct OutputPowerManagerUserData;
+
+/// User data for per-output power objects.
+#[derive(Debug, Clone, Copy)]
+pub struct OutputPowerUserData;
+
+impl<D> GlobalDispatch2<ZwlrOutputPowerManagerV1, D> for OutputPowerManagementGlobalData
 where
-    D: Dispatch<ZwlrOutputPowerManagerV1, ()> + OutputPowerManagementHandler,
+    D: Dispatch<ZwlrOutputPowerManagerV1, OutputPowerManagerUserData>
+        + Dispatch<ZwlrOutputPowerV1, OutputPowerUserData>
+        + OutputPowerManagementHandler
+        + 'static,
 {
     fn bind(
+        &self,
         _state: &mut D,
         _handle: &DisplayHandle,
         _client: &Client,
         resource: wayland_server::New<ZwlrOutputPowerManagerV1>,
-        _global_data: &OutputPowerManagementGlobalData,
         data_init: &mut DataInit<'_, D>,
     ) {
-        data_init.init(resource, ());
+        data_init.init(resource, OutputPowerManagerUserData);
     }
 
-    fn can_view(client: Client, global_data: &OutputPowerManagementGlobalData) -> bool {
-        (global_data.filter)(&client)
+    fn can_view(&self, client: &Client) -> bool {
+        (self.filter)(client)
     }
 }
 
-impl<D> Dispatch<ZwlrOutputPowerManagerV1, (), D> for OutputPowerManagementState
+impl<D> Dispatch2<ZwlrOutputPowerManagerV1, D> for OutputPowerManagerUserData
 where
-    D: Dispatch<ZwlrOutputPowerV1, ()> + OutputPowerManagementHandler,
+    D: Dispatch<ZwlrOutputPowerV1, OutputPowerUserData> + OutputPowerManagementHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         _resource: &ZwlrOutputPowerManagerV1,
         request: <ZwlrOutputPowerManagerV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, D>,
     ) {
         match request {
             zwlr_output_power_manager_v1::Request::GetOutputPower { id, output } => {
-                let power = data_init.init(id, ());
+                let power = data_init.init(id, OutputPowerUserData);
 
                 let Some(output) = Output::from_resource(&output) else {
                     warn!("wlr-output-power-management: no output for wl_output {output:?}");
@@ -168,16 +179,16 @@ where
     }
 }
 
-impl<D> Dispatch<ZwlrOutputPowerV1, (), D> for OutputPowerManagementState
+impl<D> Dispatch2<ZwlrOutputPowerV1, D> for OutputPowerUserData
 where
-    D: Dispatch<ZwlrOutputPowerV1, ()> + OutputPowerManagementHandler,
+    D: OutputPowerManagementHandler,
 {
     fn request(
+        &self,
         state: &mut D,
         _client: &Client,
         resource: &ZwlrOutputPowerV1,
         request: <ZwlrOutputPowerV1 as wayland_server::Resource>::Request,
-        _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, D>,
     ) {
@@ -234,7 +245,7 @@ where
         }
     }
 
-    fn destroyed(state: &mut D, _client: ClientId, resource: &ZwlrOutputPowerV1, _data: &()) {
+    fn destroyed(&self, state: &mut D, _client: ClientId, resource: &ZwlrOutputPowerV1) {
         state
             .output_power_management_state()
             .clients

@@ -23,7 +23,6 @@ use smithay::{
             TabletToolTipEvent, TabletToolTipState, TouchEvent,
         },
         renderer::utils::with_renderer_surface_state,
-        winit::WinitVirtualDevice,
     },
     desktop::{WindowSurfaceType, layer_map_for_output, space::SpaceElement},
     input::{
@@ -34,6 +33,7 @@ use smithay::{
             GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent, MotionEvent,
             RelativeMotionEvent,
         },
+        tablet::{self, TabletDescriptor, TabletSeatTrait},
         touch,
     },
     utils::{Logical, Point, Rectangle, SERIAL_COUNTER},
@@ -43,7 +43,6 @@ use smithay::{
         pointer_constraints::{PointerConstraint, with_pointer_constraint},
         seat::WaylandFocus,
         shell::wlr_layer,
-        tablet_manager::{TabletDescriptor, TabletSeatTrait},
     },
 };
 use tracing::{error, info};
@@ -349,7 +348,9 @@ impl State {
             &MotionEvent {
                 location,
                 serial: SERIAL_COUNTER.next_serial(),
-                time: Duration::from(self.pinnacle.clock.now()).as_millis() as u32,
+                time: smithay::backend::input::InputTime::from_millis(
+                    Duration::from(self.pinnacle.clock.now()).as_millis() as u32,
+                ),
             },
         );
         pointer.frame(self);
@@ -374,7 +375,9 @@ impl State {
             &MotionEvent {
                 location: loc,
                 serial: SERIAL_COUNTER.next_serial(),
-                time: Duration::from(self.pinnacle.clock.now()).as_millis() as u32,
+                time: smithay::backend::input::InputTime::from_millis(
+                    Duration::from(self.pinnacle.clock.now()).as_millis() as u32,
+                ),
             },
         );
         pointer.frame(self);
@@ -393,10 +396,10 @@ impl State {
         }
 
         if device.has_capability(DeviceCapability::TabletTool) {
-            self.pinnacle.seat.tablet_seat().add_tablet::<Self>(
-                &self.pinnacle.display_handle,
-                &TabletDescriptor::from(&device),
-            );
+            self.pinnacle
+                .seat
+                .tablet_seat()
+                .add_tablet(&TabletDescriptor::from(&device));
         }
     }
 
@@ -432,7 +435,7 @@ impl State {
         };
 
         let serial = SERIAL_COUNTER.next_serial();
-        let time = event.time_msec();
+        let time = event.time();
         let press_state = event.state();
 
         let shortcuts_inhibited = keyboard
@@ -620,7 +623,7 @@ impl State {
                 button,
                 state: button_state,
                 serial,
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
         pointer.frame(self);
@@ -642,7 +645,7 @@ impl State {
         let horizontal_amount_discrete = event.amount_v120(Axis::Horizontal);
         let vertical_amount_discrete = event.amount_v120(Axis::Vertical);
 
-        let mut frame = AxisFrame::new(event.time_msec()).source(source);
+        let mut frame = AxisFrame::new(event.time()).source(source);
 
         if horizontal_amount != 0.0 {
             frame = frame.value(Axis::Horizontal, horizontal_amount);
@@ -718,7 +721,7 @@ impl State {
             &MotionEvent {
                 location: pointer_loc,
                 serial,
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
 
@@ -784,7 +787,7 @@ impl State {
                         &RelativeMotionEvent {
                             delta: event.delta(),
                             delta_unaccel: event.delta_unaccel(),
-                            utime: event.time(),
+                            time: event.time(),
                         },
                     );
 
@@ -887,7 +890,7 @@ impl State {
             &MotionEvent {
                 location: new_pointer_loc,
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
 
@@ -897,7 +900,7 @@ impl State {
             &RelativeMotionEvent {
                 delta: event.delta(),
                 delta_unaccel: event.delta_unaccel(),
-                utime: event.time(),
+                time: event.time(),
             },
         );
 
@@ -913,7 +916,7 @@ impl State {
             self,
             &GestureSwipeBeginEvent {
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time: event.time(),
                 fingers: event.fingers(),
             },
         );
@@ -929,7 +932,7 @@ impl State {
         pointer.gesture_swipe_update(
             self,
             &GestureSwipeUpdateEvent {
-                time: event.time_msec(),
+                time: event.time(),
                 delta: event.delta(),
             },
         );
@@ -944,7 +947,7 @@ impl State {
             self,
             &GestureSwipeEndEvent {
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time: event.time(),
                 cancelled: event.cancelled(),
             },
         );
@@ -959,7 +962,7 @@ impl State {
             self,
             &GesturePinchBeginEvent {
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time: event.time(),
                 fingers: event.fingers(),
             },
         );
@@ -975,7 +978,7 @@ impl State {
         pointer.gesture_pinch_update(
             self,
             &GesturePinchUpdateEvent {
-                time: event.time_msec(),
+                time: event.time(),
                 delta: event.delta(),
                 scale: event.scale(),
                 rotation: event.rotation(),
@@ -992,7 +995,7 @@ impl State {
             self,
             &GesturePinchEndEvent {
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time: event.time(),
                 cancelled: event.cancelled(),
             },
         );
@@ -1007,7 +1010,7 @@ impl State {
             self,
             &GestureHoldBeginEvent {
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time: event.time(),
                 fingers: event.fingers(),
             },
         );
@@ -1022,7 +1025,7 @@ impl State {
             self,
             &GestureHoldEndEvent {
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time: event.time(),
                 cancelled: event.cancelled(),
             },
         );
@@ -1049,7 +1052,7 @@ impl State {
                 slot: event.slot(),
                 location: touch_loc,
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
     }
@@ -1074,7 +1077,7 @@ impl State {
             &touch::MotionEvent {
                 slot: event.slot(),
                 location: touch_loc,
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
     }
@@ -1089,7 +1092,7 @@ impl State {
             &touch::UpEvent {
                 slot: event.slot(),
                 serial: SERIAL_COUNTER.next_serial(),
-                time: event.time_msec(),
+                time: event.time(),
             },
         );
     }
@@ -1118,46 +1121,40 @@ impl State {
             return;
         };
 
-        let focus = self.pinnacle.pointer_contents_under(loc);
-
-        // TODO: pointer movement
-        // self.pinnacle.set_pointer_contents(focus.clone());
-        //
-        // let pointer = self.pinnacle.seat.get_pointer().unwrap();
-        // pointer.motion(
-        //     self,
-        //     focus.focus_under,
-        //     &MotionEvent {
-        //         location: loc,
-        //         serial: SERIAL_COUNTER.next_serial(),
-        //         time: event.time_msec(),
-        //     },
-        // );
-        // pointer.frame(self);
-
         let tablet_seat = self.pinnacle.seat.tablet_seat();
 
-        let tablet = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()));
-        let dh = self.pinnacle.display_handle.clone();
-        let tool = tablet_seat.add_tool::<Self>(self, &dh, &event.tool());
+        let descriptor = TabletDescriptor::from(&event.device());
+        let Some(tablet) = tablet_seat.get_tablet(&descriptor) else {
+            return;
+        };
 
-        if let Some(tablet) = tablet {
-            match event.state() {
-                ProximityState::In => {
-                    if let Some(under) = focus.focus_under.and_then(|(foc, loc)| {
-                        foc.wl_surface().map(|surf| (surf.into_owned(), loc))
-                    }) {
-                        tool.proximity_in(
-                            loc,
-                            under,
-                            &tablet,
-                            SERIAL_COUNTER.next_serial(),
-                            event.time_msec(),
-                        );
-                    }
-                }
-                ProximityState::Out => tool.proximity_out(event.time_msec()),
-            }
+        let tool = tablet_seat.add_tool(&event.tool());
+
+        let focus = self
+            .pinnacle
+            .pointer_contents_under(loc)
+            .focus_under
+            .and_then(|(foc, loc)| foc.wl_surface().map(|surf| (surf.into_owned(), loc)));
+
+        match event.state() {
+            ProximityState::In => tool.proximity_in(
+                self,
+                focus,
+                tablet,
+                &tablet::tool::ProximityInEvent {
+                    location: loc,
+                    axis: None,
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time(),
+                },
+            ),
+            ProximityState::Out => tool.proximity_out(
+                self,
+                &tablet::tool::ProximityOutEvent {
+                    serial: SERIAL_COUNTER.next_serial(),
+                    time: event.time(),
+                },
+            ),
         }
     }
 
@@ -1166,13 +1163,12 @@ impl State {
             return;
         };
 
+        let serial = SERIAL_COUNTER.next_serial();
+        let time = event.time();
+
         match event.tip_state() {
-            TabletToolTipState::Down => {
-                tool.tip_down(SERIAL_COUNTER.next_serial(), event.time_msec());
-            }
-            TabletToolTipState::Up => {
-                tool.tip_up(event.time_msec());
-            }
+            TabletToolTipState::Down => tool.down(self, &tablet::tool::DownEvent { serial, time }),
+            TabletToolTipState::Up => tool.up(self, &tablet::tool::UpEvent { serial, time }),
         }
     }
 
@@ -1184,45 +1180,50 @@ impl State {
             return;
         };
 
-        let focus = self.pinnacle.pointer_contents_under(loc);
-
-        // TODO: pointer motion
-
         let tablet_seat = self.pinnacle.seat.tablet_seat();
 
-        let tablet = tablet_seat.get_tablet(&TabletDescriptor::from(&event.device()));
-        let tool = tablet_seat.get_tool(&event.tool());
+        let Some(tool) = tablet_seat.get_tool(&event.tool()) else {
+            return;
+        };
 
-        if let Some((tablet, tool)) = tablet.zip(tool) {
-            if event.pressure_has_changed() {
-                tool.pressure(event.pressure());
-            }
-            if event.distance_has_changed() {
-                tool.distance(event.distance());
-            }
-            if event.tilt_has_changed() {
-                tool.tilt(event.tilt());
-            }
-            if event.slider_has_changed() {
-                tool.slider_position(event.slider_position());
-            }
-            if event.rotation_has_changed() {
-                tool.rotation(event.rotation());
-            }
-            if event.wheel_has_changed() {
-                tool.wheel(event.wheel_delta(), event.wheel_delta_discrete());
-            }
-
-            tool.motion(
-                loc,
-                focus
-                    .focus_under
-                    .and_then(|(foc, loc)| foc.wl_surface().map(|surf| (surf.into_owned(), loc))),
-                &tablet,
-                SERIAL_COUNTER.next_serial(),
-                event.time_msec(),
-            );
+        let mut axis = tablet::tool::AxisFrame::new();
+        if event.pressure_has_changed() {
+            axis = axis.pressure(event.pressure());
         }
+        if event.distance_has_changed() {
+            axis = axis.distance(event.distance());
+        }
+        if event.tilt_has_changed() {
+            let (x, y) = event.tilt();
+            axis = axis.tilt(x, y);
+        }
+        if event.slider_has_changed() {
+            axis = axis.slider(event.slider_position());
+        }
+        if event.rotation_has_changed() {
+            axis = axis.rotation(event.rotation());
+        }
+        if event.wheel_has_changed() {
+            axis = axis.wheel(event.wheel_delta(), event.wheel_delta_discrete());
+        }
+
+        let focus = self
+            .pinnacle
+            .pointer_contents_under(loc)
+            .focus_under
+            .and_then(|(foc, loc)| foc.wl_surface().map(|surf| (surf.into_owned(), loc)));
+
+        tool.motion(
+            self,
+            focus,
+            &tablet::tool::MotionEvent {
+                location: loc,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: event.time(),
+            },
+        );
+        tool.axis(self, axis);
+        tool.frame(self, event.time());
     }
 
     fn on_tablet_tool_button<I: InputBackend>(&mut self, event: I::TabletToolButtonEvent) {
@@ -1231,10 +1232,13 @@ impl State {
         };
 
         tool.button(
-            event.button(),
-            event.button_state(),
-            SERIAL_COUNTER.next_serial(),
-            event.time_msec(),
+            self,
+            &tablet::tool::ButtonEvent {
+                serial: SERIAL_COUNTER.next_serial(),
+                button: event.button(),
+                state: event.button_state(),
+                time: event.time(),
+            },
         );
     }
 
@@ -1251,9 +1255,6 @@ impl State {
                 .input_state
                 .libinput_state
                 .map_region_for_device(udev_device, &self.pinnacle.space)
-        } else if let Some(_winit_device) = <dyn Any>::downcast_ref::<WinitVirtualDevice>(device) {
-            // TODO:
-            None
         } else {
             None
         }

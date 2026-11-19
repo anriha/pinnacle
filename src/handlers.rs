@@ -22,17 +22,14 @@ use std::{
 
 use anyhow::Context;
 use smithay::{
+    wayland::color::management::{
+        ColorManagementHandler, ColorManagementState, ImageDescription,
+        send_image_description_info,
+    },
     backend::{
         input::TabletToolDescriptor,
         renderer::utils::{self, with_renderer_surface_state},
     },
-    delegate_compositor, delegate_content_type, delegate_cursor_shape, delegate_data_control,
-    delegate_data_device, delegate_ext_data_control, delegate_fractional_scale,
-    delegate_keyboard_shortcuts_inhibit, delegate_layer_shell, delegate_output,
-    delegate_pointer_constraints, delegate_pointer_gestures, delegate_presentation,
-    delegate_primary_selection, delegate_relative_pointer, delegate_seat,
-    delegate_security_context, delegate_shm, delegate_single_pixel_buffer, delegate_tablet_manager,
-    delegate_viewporter, delegate_xwayland_keyboard_grab, delegate_xwayland_shell,
     desktop::{
         self, LayerSurface, PopupKind, PopupManager, WindowSurfaceType, find_popup_root_surface,
         get_popup_toplevel_coords, layer_map_for_output,
@@ -79,18 +76,18 @@ use smithay::{
             xdg::PopupSurface,
         },
         shm::{ShmHandler, ShmState},
-        tablet_manager::TabletSeatHandler,
         xwayland_keyboard_grab::XWaylandKeyboardGrabHandler,
         xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     },
+    input::tablet::TabletSeatHandler,
     xwayland::XWaylandClientData,
 };
 use tracing::{debug, error, trace, warn};
 
+smithay::delegate_dispatch2!(State);
+
 use crate::{
     backend::Backend,
-    delegate_gamma_control, delegate_output_management, delegate_output_power_management,
-    delegate_screencopy,
     focus::{keyboard::KeyboardFocusTarget, pointer::PointerFocusTarget},
     hook::add_mapped_toplevel_pre_commit_hook,
     output::OutputMode,
@@ -164,7 +161,7 @@ impl CompositorHandler for State {
 
                     if let Some(toplevel) = unmapped.window.toplevel() {
                         if let Some(hook) = self.pinnacle.dmabuf_hooks.remove(surface) {
-                            compositor::remove_pre_commit_hook(surface, hook);
+                            compositor::remove_pre_commit_hook(surface, &hook);
                         }
 
                         let hook_id = add_mapped_toplevel_pre_commit_hook(toplevel);
@@ -429,7 +426,6 @@ impl CompositorHandler for State {
         panic!("Unknown client data type");
     }
 }
-delegate_compositor!(State);
 
 fn layer_surface_is_initial_configure_sent(layer: &LayerSurface) -> bool {
     let _span = tracy_client::span!("layer_surface_is_initial_configure_sent");
@@ -546,28 +542,24 @@ impl DataDeviceHandler for State {
         &mut self.pinnacle.data_device_state
     }
 }
-delegate_data_device!(State);
 
 impl PrimarySelectionHandler for State {
     fn primary_selection_state(&mut self) -> &mut PrimarySelectionState {
         &mut self.pinnacle.primary_selection_state
     }
 }
-delegate_primary_selection!(State);
 
 impl wlr_data_control::DataControlHandler for State {
     fn data_control_state(&mut self) -> &mut wlr_data_control::DataControlState {
         &mut self.pinnacle.wlr_data_control_state
     }
 }
-delegate_data_control!(State);
 
 impl ext_data_control::DataControlHandler for State {
     fn data_control_state(&mut self) -> &mut ext_data_control::DataControlState {
         &mut self.pinnacle.ext_data_control_state
     }
 }
-delegate_ext_data_control!(State);
 
 impl SeatHandler for State {
     type KeyboardFocus = KeyboardFocusTarget;
@@ -601,14 +593,12 @@ impl SeatHandler for State {
         }
     }
 }
-delegate_seat!(State);
 
 impl ShmHandler for State {
     fn shm_state(&self) -> &ShmState {
         &self.pinnacle.shm_state
     }
 }
-delegate_shm!(State);
 
 impl OutputHandler for State {
     fn output_bound(&mut self, output: Output, wl_output: WlOutput) {
@@ -618,9 +608,7 @@ impl OutputHandler for State {
         crate::protocol::ext_workspace::on_output_bound(self, &output, &wl_output);
     }
 }
-delegate_output!(State);
 
-delegate_viewporter!(State);
 
 impl FractionalScaleHandler for State {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
@@ -671,11 +659,8 @@ impl FractionalScaleHandler for State {
     }
 }
 
-delegate_fractional_scale!(State);
 
-delegate_relative_pointer!(State);
 
-delegate_presentation!(State);
 
 impl WlrLayerShellHandler for State {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
@@ -749,7 +734,6 @@ impl WlrLayerShellHandler for State {
         }
     }
 }
-delegate_layer_shell!(State);
 
 impl ScreencopyHandler for State {
     fn frame(&mut self, frame: Screencopy) {
@@ -762,7 +746,6 @@ impl ScreencopyHandler for State {
         output.with_state_mut(|state| state.screencopies.push(frame));
     }
 }
-delegate_screencopy!(State);
 
 impl GammaControlHandler for State {
     fn gamma_control_manager_state(&mut self) -> &mut GammaControlManagerState {
@@ -819,7 +802,6 @@ impl GammaControlHandler for State {
         }
     }
 }
-delegate_gamma_control!(State);
 
 impl SecurityContextHandler for State {
     fn context_created(&mut self, source: SecurityContextListenerSource, context: SecurityContext) {
@@ -846,9 +828,16 @@ impl SecurityContextHandler for State {
             .expect("Failed to insert security context listener source into event loop");
     }
 }
-delegate_security_context!(State);
 
 impl PointerConstraintsHandler for State {
+    fn remove_constraint(
+        &mut self,
+        _surface: &WlSurface,
+        _pointer: &PointerHandle<Self>,
+        _remove: smithay::wayland::pointer_constraints::ConstraintRemove,
+    ) {
+    }
+
     fn new_constraint(&mut self, _surface: &WlSurface, pointer: &PointerHandle<Self>) {
         let _span = tracy_client::span!("PointerConstraintsHandler::new_constraint");
 
@@ -881,14 +870,12 @@ impl PointerConstraintsHandler for State {
         }
     }
 }
-delegate_pointer_constraints!(State);
 
 impl XWaylandShellHandler for State {
     fn xwayland_shell_state(&mut self) -> &mut XWaylandShellState {
         &mut self.pinnacle.xwayland_shell_state
     }
 }
-delegate_xwayland_shell!(State);
 
 impl OutputManagementHandler for State {
     fn output_management_manager_state(&mut self) -> &mut OutputManagementManagerState {
@@ -970,7 +957,6 @@ impl OutputManagementHandler for State {
         true
     }
 }
-delegate_output_management!(State);
 
 impl OutputPowerManagementHandler for State {
     fn output_power_management_state(&mut self) -> &mut OutputPowerManagementState {
@@ -987,18 +973,17 @@ impl OutputPowerManagementHandler for State {
         }
     }
 }
-delegate_output_power_management!(State);
 
 impl TabletSeatHandler for State {
+    type ToolFocus = WlSurface;
+
     fn tablet_tool_image(&mut self, tool: &TabletToolDescriptor, image: CursorImageStatus) {
         // TODO:
         let _ = tool;
         let _ = image;
     }
 }
-delegate_tablet_manager!(State);
 
-delegate_cursor_shape!(State);
 
 impl KeyboardShortcutsInhibitHandler for State {
     fn keyboard_shortcuts_inhibit_state(&mut self) -> &mut KeyboardShortcutsInhibitState {
@@ -1010,7 +995,6 @@ impl KeyboardShortcutsInhibitHandler for State {
         inhibitor.activate();
     }
 }
-delegate_keyboard_shortcuts_inhibit!(State);
 
 impl XWaylandKeyboardGrabHandler for State {
     fn keyboard_focus_for_xsurface(&self, surface: &WlSurface) -> Option<Self::KeyboardFocus> {
@@ -1020,13 +1004,9 @@ impl XWaylandKeyboardGrabHandler for State {
             .map(KeyboardFocusTarget::from)
     }
 }
-delegate_xwayland_keyboard_grab!(State);
 
-delegate_pointer_gestures!(State);
 
-delegate_single_pixel_buffer!(State);
 
-delegate_content_type!(State);
 
 impl Pinnacle {
     fn position_popup(&self, popup: &PopupSurface) -> anyhow::Result<()> {
@@ -1135,5 +1115,109 @@ impl Pinnacle {
 
             constraint.activate();
         });
+    }
+}
+
+impl ColorManagementHandler for State {
+    fn color_management_state(&mut self) -> &mut ColorManagementState {
+        &mut self.pinnacle.color_management_state
+    }
+
+    fn description_for_output(&mut self, output: &Output) -> ImageDescription {
+        if crate::hdr::hdr_requested_for(output) {
+            crate::hdr::bt2020_pq_description()
+        } else {
+            ImageDescription::SRGB
+        }
+    }
+
+    fn schedule_image_description_info(
+        &mut self,
+        info: smithay::reexports::wayland_protocols::wp::color_management::v1::server::wp_image_description_info_v1::WpImageDescriptionInfoV1,
+        desc: ImageDescription,
+    ) {
+        // `done` is a destructor event, so the info must be sent from the event
+        // loop, never from inside the request callback that created it.
+        self.pinnacle.loop_handle.insert_idle(move |_state| {
+            send_image_description_info(&info, &desc);
+        });
+    }
+
+    fn preferred_description_for_surface(
+        &mut self,
+        surface: &WlSurface,
+    ) -> ImageDescription {
+        // Any surface on an HDR output is asked for PQ, not only a fullscreen one.
+        // The output is driven in PQ, and because the compositor draws an
+        // already-encoded client buffer as a copy, a windowed client loses nothing
+        // by outputting PQ. Answering SRGB instead is not harmless: the client takes
+        // it as "the output is SDR", tone maps HDR content down itself, and no
+        // compositor-side change can recover the range afterwards.
+        //
+        // Clients ask before their surface is mapped (mpv does, at VO init), when
+        // there is no window and therefore no output to answer for, so an unmapped
+        // surface is answered for the output it is most likely to land on: the
+        // focused one.
+        let window = self.pinnacle.window_for_surface(surface).cloned();
+        let output = match &window {
+            Some(window) => self
+                .pinnacle
+                .space
+                .outputs_for_element(window)
+                .first()
+                .cloned(),
+            None => self.pinnacle.output_focus_stack.current_focus().cloned(),
+        };
+        match output {
+            Some(output) if crate::hdr::hdr_requested_for(&output) => {
+                crate::hdr::bt2020_pq_description()
+            }
+            _ => ImageDescription::SRGB,
+        }
+    }
+
+    fn image_description_changed(&mut self, surface: &WlSurface) {
+        // The description is not used for compositing yet (all SDR content goes
+        // through the convert shader), but the surface should be redrawn so the
+        // client's feedback and any future per-surface handling stay in step.
+        //
+        // It is also the one place that can tell whether a client is asking for
+        // HDR at all: if a player goes fullscreen and this never fires, the
+        // client never negotiated an HDR description and its output is a plain
+        // SDR surface, which the convert shader then treats as SDR.
+        if crate::hdr::verbose() {
+            // The request is still pending at this point, so reading the committed
+            // description here reports the previous value and is actively
+            // misleading; read what the client just asked for instead.
+            let description = smithay::wayland::compositor::with_states(surface, |states| {
+                states
+                    .cached_state
+                    .get::<smithay::wayland::color::management::ColorManagementSurfaceCachedState>()
+                    .pending()
+                    .description
+            });
+            let window = self.pinnacle.window_for_surface(surface);
+            let class = window.and_then(|window| window.class());
+            let is_toplevel = window
+                .and_then(|window| window.toplevel())
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface);
+            tracing::info!(
+                "surface {} asked for a description: {:?} (window {class:?}, is toplevel {is_toplevel})",
+                surface.id().protocol_id(),
+                description,
+            );
+        }
+        let outputs = self
+            .pinnacle
+            .window_for_surface(surface)
+            .map(|window| {
+                self.pinnacle
+                    .space
+                    .outputs_for_element(window)
+            })
+            .unwrap_or_default();
+        for output in outputs {
+            self.schedule_render(&output);
+        }
     }
 }

@@ -1,6 +1,7 @@
 use std::{borrow::Cow, sync::Arc};
 
 use smithay::{
+    backend::input::InputTime,
     desktop::{
         LayerSurface, PopupKind, WindowSurface, WindowSurfaceType, layer_map_for_output,
         utils::with_surfaces_surface_tree,
@@ -193,7 +194,7 @@ impl DndFocus<State> for PointerFocusTarget {
         offer: Option<&mut Self::OfferData<S>>,
         seat: &Seat<State>,
         location: Point<f64, Logical>,
-        time: u32,
+        time: InputTime,
     ) {
         match self {
             PointerFocusTarget::WlSurface(wl_surface) => {
@@ -448,7 +449,7 @@ impl PointerTarget<State> for PointerFocusTarget {
         }
     }
 
-    fn leave(&self, seat: &Seat<State>, data: &mut State, serial: Serial, time: u32) {
+    fn leave(&self, seat: &Seat<State>, data: &mut State, serial: Serial, time: InputTime) {
         match self {
             PointerFocusTarget::WlSurface(surf) => {
                 PointerTarget::leave(surf, seat, data, serial, time);
@@ -461,73 +462,72 @@ impl PointerTarget<State> for PointerFocusTarget {
 }
 
 impl TouchTarget<State> for PointerFocusTarget {
-    fn down(&self, seat: &Seat<State>, data: &mut State, event: &touch::DownEvent, seq: Serial) {
+    fn down(&self, seat: &Seat<State>, data: &mut State, event: &touch::DownEvent) {
         match self {
-            PointerFocusTarget::WlSurface(surf) => TouchTarget::down(surf, seat, data, event, seq),
-            PointerFocusTarget::X11Surface(surf) => TouchTarget::down(surf, seat, data, event, seq),
+            PointerFocusTarget::WlSurface(surf) => TouchTarget::down(surf, seat, data, event),
+            PointerFocusTarget::X11Surface(surf) => TouchTarget::down(surf, seat, data, event),
         }
     }
 
-    fn up(&self, seat: &Seat<State>, data: &mut State, event: &touch::UpEvent, seq: Serial) {
+    fn up(&self, seat: &Seat<State>, data: &mut State, event: &touch::UpEvent) {
         match self {
-            PointerFocusTarget::WlSurface(surf) => TouchTarget::up(surf, seat, data, event, seq),
-            PointerFocusTarget::X11Surface(surf) => TouchTarget::up(surf, seat, data, event, seq),
+            PointerFocusTarget::WlSurface(surf) => TouchTarget::up(surf, seat, data, event),
+            PointerFocusTarget::X11Surface(surf) => TouchTarget::up(surf, seat, data, event),
         }
     }
 
-    fn motion(
+    fn motion(&self, seat: &Seat<State>, data: &mut State, event: &touch::MotionEvent) {
+        match self {
+            PointerFocusTarget::WlSurface(surf) => {
+                TouchTarget::motion(surf, seat, data, event);
+            }
+            PointerFocusTarget::X11Surface(surf) => {
+                TouchTarget::motion(surf, seat, data, event);
+            }
+        }
+    }
+
+    fn frame(&self, seat: &Seat<State>, data: &mut State, marker: touch::FrameMarker) {
+        match self {
+            PointerFocusTarget::WlSurface(surf) => TouchTarget::frame(surf, seat, data, marker),
+            PointerFocusTarget::X11Surface(surf) => TouchTarget::frame(surf, seat, data, marker),
+        }
+    }
+
+    fn cancel(&self, seat: &Seat<State>, data: &mut State, marker: touch::FrameMarker) {
+        match self {
+            PointerFocusTarget::WlSurface(surf) => TouchTarget::cancel(surf, seat, data, marker),
+            PointerFocusTarget::X11Surface(surf) => TouchTarget::cancel(surf, seat, data, marker),
+        }
+    }
+
+    fn last_frame(
         &self,
         seat: &Seat<State>,
         data: &mut State,
-        event: &touch::MotionEvent,
-        seq: Serial,
-    ) {
+    ) -> Option<touch::FrameMarker> {
+        match self {
+            PointerFocusTarget::WlSurface(surf) => TouchTarget::last_frame(surf, seat, data),
+            PointerFocusTarget::X11Surface(surf) => TouchTarget::last_frame(surf, seat, data),
+        }
+    }
+
+    fn shape(&self, seat: &Seat<State>, data: &mut State, event: &touch::ShapeEvent) {
+        match self {
+            PointerFocusTarget::WlSurface(surf) => TouchTarget::shape(surf, seat, data, event),
+            PointerFocusTarget::X11Surface(surf) => {
+                TouchTarget::shape(surf, seat, data, event);
+            }
+        }
+    }
+
+    fn orientation(&self, seat: &Seat<State>, data: &mut State, event: &touch::OrientationEvent) {
         match self {
             PointerFocusTarget::WlSurface(surf) => {
-                TouchTarget::motion(surf, seat, data, event, seq);
+                TouchTarget::orientation(surf, seat, data, event);
             }
             PointerFocusTarget::X11Surface(surf) => {
-                TouchTarget::motion(surf, seat, data, event, seq);
-            }
-        }
-    }
-
-    fn frame(&self, seat: &Seat<State>, data: &mut State, seq: Serial) {
-        match self {
-            PointerFocusTarget::WlSurface(surf) => TouchTarget::frame(surf, seat, data, seq),
-            PointerFocusTarget::X11Surface(surf) => TouchTarget::frame(surf, seat, data, seq),
-        }
-    }
-
-    fn cancel(&self, seat: &Seat<State>, data: &mut State, seq: Serial) {
-        match self {
-            PointerFocusTarget::WlSurface(surf) => TouchTarget::cancel(surf, seat, data, seq),
-            PointerFocusTarget::X11Surface(surf) => TouchTarget::cancel(surf, seat, data, seq),
-        }
-    }
-
-    fn shape(&self, seat: &Seat<State>, data: &mut State, event: &touch::ShapeEvent, seq: Serial) {
-        match self {
-            PointerFocusTarget::WlSurface(surf) => TouchTarget::shape(surf, seat, data, event, seq),
-            PointerFocusTarget::X11Surface(surf) => {
-                TouchTarget::shape(surf, seat, data, event, seq);
-            }
-        }
-    }
-
-    fn orientation(
-        &self,
-        seat: &Seat<State>,
-        data: &mut State,
-        event: &touch::OrientationEvent,
-        seq: Serial,
-    ) {
-        match self {
-            PointerFocusTarget::WlSurface(surf) => {
-                TouchTarget::orientation(surf, seat, data, event, seq);
-            }
-            PointerFocusTarget::X11Surface(surf) => {
-                TouchTarget::orientation(surf, seat, data, event, seq);
+                TouchTarget::orientation(surf, seat, data, event);
             }
         }
     }

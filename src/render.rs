@@ -590,7 +590,7 @@ pub fn take_presentation_feedback(
                 &mut output_presentation_feedback,
                 surface_primary_scanout_output,
                 |surface, _| {
-                    surface_presentation_feedback_flags_from_states(surface, render_element_states)
+                    surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
                 },
             );
         }
@@ -602,7 +602,7 @@ pub fn take_presentation_feedback(
             &mut output_presentation_feedback,
             surface_primary_scanout_output,
             |surface, _| {
-                surface_presentation_feedback_flags_from_states(surface, render_element_states)
+                surface_presentation_feedback_flags_from_states(surface, None, render_element_states)
             },
         );
     }

@@ -1,5 +1,4 @@
 use smithay::{
-    delegate_idle_inhibit, delegate_idle_notify,
     desktop::utils::surface_primary_scanout_output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::IsAlive,
@@ -17,7 +16,6 @@ impl IdleNotifierHandler for State {
         &mut self.pinnacle.idle_notifier_state
     }
 }
-delegate_idle_notify!(State);
 
 impl IdleInhibitHandler for State {
     fn inhibit(&mut self, surface: WlSurface) {
@@ -30,7 +28,6 @@ impl IdleInhibitHandler for State {
         self.pinnacle.refresh_idle_inhibit();
     }
 }
-delegate_idle_inhibit!(State);
 
 impl Pinnacle {
     pub fn refresh_idle_inhibit(&mut self) {
