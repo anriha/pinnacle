@@ -1,3 +1,6 @@
+> **This fork is maintained on Codeberg: https://codeberg.org/anriha/pinnacle.**
+> This GitHub repository is a mirror of it and is not kept in sync.
+
 ![Pinnacle banner](/assets/pinnacle_banner_dark.png)
 
 <img width="1920" height="1080" alt="Pinnacle screenshot" src="/assets/pinnacle_screenshot.webp" />
